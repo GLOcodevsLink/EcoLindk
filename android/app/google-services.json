@@ -1,0 +1,46 @@
+{
+  "project_info": {
+    "project_number": "1022714819094",
+    "project_id": "ecolindk",
+    "storage_bucket": "ecolindk.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1022714819094:android:e9d5ac4516fcc308297b37",
+        "android_client_info": {
+          "package_name": "com.example.ecolindk"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1022714819094-3t2jpfgvrl0f31pil9d7kluj44mm3687.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCjMP122z7RQ1bXmclYw5eYy7sRJU3Jof4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1022714819094-3t2jpfgvrl0f31pil9d7kluj44mm3687.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "1022714819094-ui0ddhq6is8je2c0n7hb86o77npinc41.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.ecolindk"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,0 +1,44 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Un utilisateur peut lire/créer uniquement sa propre fiche.
+    //
+    // À la création du compte, `role` et `verificationStatus` sont null
+    // (le rôle est choisi juste après, sur RoleSelectionScreen). La mise à
+    // jour qui fixe le rôle n'est autorisée qu'une seule fois (transition
+    // null -> valeur) et seulement avec la paire cohérente attendue :
+    //   - household -> verificationStatus "verified" (immédiat)
+    //   - collector -> verificationStatus "pending" (attend un admin)
+    // Une fois le rôle fixé, ni `role` ni `verificationStatus` ne peuvent
+    // plus changer depuis le client (seule une Cloud Function admin — via
+    // le SDK Admin, qui contourne ces règles — peut valider un Collecteur).
+    match /users/{userId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+
+      allow create: if request.auth != null && request.auth.uid == userId;
+
+      allow update: if request.auth != null
+                    && request.auth.uid == userId
+                    && (
+                         (
+                           resource.data.role == null &&
+                           (
+                             (request.resource.data.role == 'household' &&
+                              request.resource.data.verificationStatus == 'verified') ||
+                             (request.resource.data.role == 'collector' &&
+                              request.resource.data.verificationStatus == 'pending')
+                           )
+                         ) ||
+                         (
+                           resource.data.role != null &&
+                           request.resource.data.role == resource.data.role &&
+                           request.resource.data.verificationStatus == resource.data.verificationStatus
+                         )
+                       );
+
+      allow delete: if false;
+    }
+  }
+}

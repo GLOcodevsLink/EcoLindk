@@ -1,0 +1,29 @@
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "ecolindk",
+          "appId": "1:1022714819094:android:e9d5ac4516fcc308297b37",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "ecolindk",
+          "configurations": {
+            "android": "1:1022714819094:android:e9d5ac4516fcc308297b37",
+            "ios": "1:1022714819094:ios:738ef9ce9f74373f297b37",
+            "macos": "1:1022714819094:ios:738ef9ce9f74373f297b37",
+            "web": "1:1022714819094:web:3b8eda9d817b814e297b37",
+            "windows": "1:1022714819094:web:1f7f4f1cde23d7b7297b37"
+          }
+        }
+      }
+    }
+  },
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  }
+}
