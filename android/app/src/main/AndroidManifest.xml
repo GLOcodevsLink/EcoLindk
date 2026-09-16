@@ -1,4 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Gemini est appelé par HTTPS depuis GeminiService. Sans cette
+         permission, Android bloque la requête avant qu'elle n'atteigne l'API. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <!-- Réglage "rapide" de l'onboarding : notifications (Android 13+), voir
          onboarding_screen.dart. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>

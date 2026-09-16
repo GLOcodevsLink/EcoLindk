@@ -36,7 +36,9 @@ class GeminiService {
   // Modèle multimodal (texte + image), rapide et disponible en v1beta —
   // même modèle pour la conversation et la classification d'images pour
   // n'avoir qu'une seule intégration à maintenir.
-  static const _model = 'gemini-2.5-flash';
+  // `gemini-2.5-flash` n'est plus proposé aux nouveaux projets Gemini.
+  // Le modèle Flash actuellement indiqué par l'API pour cette clé est 3.6.
+  static const _model = 'gemini-3.6-flash';
   static const _baseUrl = 'https://generativelanguage.googleapis.com/v1beta/models';
   static const _timeout = Duration(seconds: 30);
 
