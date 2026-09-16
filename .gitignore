@@ -4,6 +4,10 @@
 *.pyc
 *.swp
 .DS_Store
+
+# Secrets — API keys (e.g. GEMINI_API_KEY) live only in this local, untracked
+# file, never hard-coded in Dart source. See lib/core/env_config.dart.
+.env
 .atom/
 .build/
 .buildlog/

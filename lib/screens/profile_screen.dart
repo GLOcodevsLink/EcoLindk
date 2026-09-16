@@ -4,12 +4,17 @@ import '../core/theme.dart';
 import '../models/user_role.dart';
 import '../services/auth_service.dart';
 import '../widgets/decorative_leaves.dart';
+import '../widgets/gradient_pill_button.dart';
 import '../core/l10n/app_language.dart';
 import '../core/l10n/strings.dart';
-import 'onboarding/onboarding_screen.dart';
 
-/// Page de profil : informations du compte (lues depuis Firestore) +
-/// déconnexion.
+/// Modification du profil, ouverte en tapant l'avatar sur SettingsScreen.
+///
+/// Modifiable : prénom, nom, et adresse (Ménage) ou zone de collecte /
+/// entreprise (Collecteur). Email et téléphone sont affichés en lecture
+/// seule : les changer nécessiterait une re-vérification côté Firebase Auth
+/// (email) ou une ré-indexation de `phone_lookup` (téléphone), hors scope
+/// actuel.
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
 
@@ -19,8 +24,20 @@ class ProfileScreen extends StatefulWidget {
 
 class _ProfileScreenState extends State<ProfileScreen> {
   final _authService = AuthService();
+  final _formKey = GlobalKey<FormState>();
   late final Future<DocumentSnapshot<Map<String, dynamic>>?> _userDocFuture;
-  bool _isSigningOut = false;
+
+  final _firstNameController = TextEditingController();
+  final _lastNameController = TextEditingController();
+  final _addressController = TextEditingController();
+  final _collectionZoneController = TextEditingController();
+  final _companyNameController = TextEditingController();
+
+  UserRole _role = UserRole.household;
+  bool _loaded = false;
+  bool _isSaving = false;
+  String _email = '';
+  String _phone = '';
 
   @override
   void initState() {
@@ -30,160 +47,174 @@ class _ProfileScreenState extends State<ProfileScreen> {
         uid == null ? Future.value(null) : _authService.fetchUserDocument(uid);
   }
 
-  Future<void> _confirmSignOut(AppStrings s) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.card,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Text(s.logoutConfirmTitle),
-        content: Text(s.logoutConfirmMessage),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: Text(s.cancel),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: Text(s.logout,
-                style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
+  @override
+  void dispose() {
+    _firstNameController.dispose();
+    _lastNameController.dispose();
+    _addressController.dispose();
+    _collectionZoneController.dispose();
+    _companyNameController.dispose();
+    super.dispose();
+  }
 
-    setState(() => _isSigningOut = true);
-    await _authService.signOut();
-    if (!mounted) return;
-    Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => const OnboardingScreen()),
-      (route) => false,
-    );
+  /// Ne remplit les champs qu'une seule fois (le FutureBuilder rebuild à
+  /// chaque frame tant que le futur n'est pas résolu) pour ne pas écraser ce
+  /// que l'utilisateur est en train de saisir.
+  void _populate(Map<String, dynamic>? data) {
+    if (_loaded || data == null) return;
+    _loaded = true;
+    _firstNameController.text = (data['firstName'] as String?) ?? '';
+    _lastNameController.text = (data['lastName'] as String?) ?? '';
+    _addressController.text = (data['address'] as String?) ?? '';
+    _collectionZoneController.text = (data['collectionZone'] as String?) ?? '';
+    _companyNameController.text = (data['companyName'] as String?) ?? '';
+    _role = (data['role'] as String?) == UserRole.collector.name
+        ? UserRole.collector
+        : UserRole.household;
+    _email = (data['email'] as String?) ?? (_authService.currentUser?.email ?? '');
+    _phone = (data['phone'] as String?) ?? '';
+  }
+
+  Future<void> _save(AppStrings s) async {
+    if (!_formKey.currentState!.validate()) return;
+    final uid = _authService.currentUser?.uid;
+    if (uid == null) return;
+
+    setState(() => _isSaving = true);
+    final firstName = _firstNameController.text.trim();
+    final lastName = _lastNameController.text.trim();
+    final fields = <String, dynamic>{
+      'firstName': firstName,
+      'lastName': lastName,
+      'fullName': '$firstName $lastName'.trim(),
+    };
+    if (_role == UserRole.household) {
+      fields['address'] = _addressController.text.trim();
+    } else {
+      fields['collectionZone'] = _collectionZoneController.text.trim();
+      final company = _companyNameController.text.trim();
+      fields['companyName'] = company.isEmpty ? null : company;
+    }
+
+    try {
+      await _authService.updateProfileFields(uid, fields);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(s.profileUpdated)));
+      Navigator.of(context).pop(true);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(s.authError('unknown'))));
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<AppLanguage>(
-      valueListenable: appLanguage,
-      builder: (context, lang, _) {
-        final s = AppStrings.of(lang);
-        return FutureBuilder<DocumentSnapshot<Map<String, dynamic>>?>(
-          future: _userDocFuture,
-          builder: (context, snapshot) {
-            if (snapshot.connectionState != ConnectionState.done) {
-              return const Scaffold(
-                backgroundColor: AppColors.surface,
-                body: Center(child: CircularProgressIndicator(color: AppColors.greenMid)),
-              );
-            }
-            return _buildProfile(s, snapshot.data?.data());
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: appThemeMode,
+      builder: (context, _, __) {
+        return ValueListenableBuilder<AppLanguage>(
+          valueListenable: appLanguage,
+          builder: (context, lang, _) {
+            final s = AppStrings.of(lang);
+            return FutureBuilder<DocumentSnapshot<Map<String, dynamic>>?>(
+              future: _userDocFuture,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState != ConnectionState.done) {
+                  return Scaffold(
+                    backgroundColor: AppColors.surface,
+                    body: const Center(
+                        child: CircularProgressIndicator(
+                            color: AppColors.greenMid)),
+                  );
+                }
+                _populate(snapshot.data?.data());
+                return _buildForm(s);
+              },
+            );
           },
         );
       },
     );
   }
 
-  Widget _buildProfile(AppStrings s, Map<String, dynamic>? data) {
-    final fullName = (data?['fullName'] as String?)?.trim() ?? '';
-    final email = (data?['email'] as String?) ?? (_authService.currentUser?.email ?? '');
-    final phone = (data?['phone'] as String?) ?? '';
-    final address = data?['address'] as String?;
-    final role = (data?['role'] as String?) == UserRole.collector.name
-        ? UserRole.collector
-        : UserRole.household;
-    final verificationStatus = data?['verificationStatus'] as String?;
-    final collectionZone = data?['collectionZone'] as String?;
-    final workStatusStr = data?['workStatus'] as String?;
-    final companyName = data?['companyName'] as String?;
-
+  Widget _buildForm(AppStrings s) {
     return Scaffold(
       backgroundColor: AppColors.surface,
       body: Stack(
         children: [
           const DecorativeLeaves(subtle: true),
           SafeArea(
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
-              children: [
-                Row(
-                  children: [
-                    IconButton(
-                      onPressed: () => Navigator.of(context).pop(),
-                      icon: const Icon(Icons.arrow_back, color: AppColors.greenDark),
-                    ),
-                    Expanded(
-                      child: Text(s.profileTitle,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                              fontSize: 15.5, fontWeight: FontWeight.w800, color: AppColors.greenDark)),
-                    ),
-                    const SizedBox(width: 48), // équilibre visuel avec le bouton retour
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Center(
-                  child: Column(
+            child: Form(
+              key: _formKey,
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
+                children: [
+                  Row(
                     children: [
-                      Container(
-                        width: 84,
-                        height: 84,
-                        decoration: const BoxDecoration(
-                            gradient: AppColors.buttonGradient, shape: BoxShape.circle),
-                        child: Center(
-                          child: Text(_initials(fullName),
-                              style: const TextStyle(
-                                  color: Colors.white, fontSize: 28, fontWeight: FontWeight.w800)),
-                        ),
+                      IconButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        icon: Icon(Icons.arrow_back, color: AppColors.heading),
                       ),
-                      const SizedBox(height: 12),
-                      Text(fullName.isEmpty ? '—' : fullName,
-                          style: const TextStyle(
-                              fontSize: 17, fontWeight: FontWeight.w800, color: AppColors.greenDark)),
-                      const SizedBox(height: 8),
-                      _roleBadge(role, verificationStatus, s),
+                      Expanded(
+                        child: Text(s.editProfileTitle,
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                                fontSize: 15.5,
+                                fontWeight: FontWeight.w800,
+                                color: AppColors.heading)),
+                      ),
+                      const SizedBox(width: 48),
                     ],
                   ),
-                ),
-                const SizedBox(height: 26),
-                Text(s.profileInfoSection,
-                    style: const TextStyle(
-                        fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 0.4, color: AppColors.textGray)),
-                const SizedBox(height: 10),
-                _infoTile(Icons.email_outlined, s.email, email),
-                _infoTile(Icons.phone_outlined, s.phoneLabel, phone),
-                if (role == UserRole.household && address != null && address.isNotEmpty)
-                  _infoTile(Icons.home_outlined, s.address, address),
-                if (role == UserRole.collector) ...[
-                  if (collectionZone != null && collectionZone.isNotEmpty)
-                    _infoTile(Icons.location_on_outlined, s.collectionZone, collectionZone),
-                  if (workStatusStr != null)
-                    _infoTile(
-                      Icons.badge_outlined,
-                      s.workStatusLabel,
-                      workStatusStr == WorkStatus.company.name
-                          ? s.workStatusCompany
-                          : s.workStatusIndependent,
-                    ),
-                  if (companyName != null && companyName.isNotEmpty)
-                    _infoTile(Icons.apartment_outlined, s.companyNameOptional, companyName),
-                ],
-                const SizedBox(height: 26),
-                _isSigningOut
-                    ? const Center(
-                        child: CircularProgressIndicator(color: AppColors.greenMid, strokeWidth: 2.4))
-                    : OutlinedButton.icon(
-                        onPressed: () => _confirmSignOut(s),
-                        icon: const Icon(Icons.logout, size: 18, color: Colors.redAccent),
-                        label: Text(s.logout,
-                            style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
-                        style: OutlinedButton.styleFrom(
-                          minimumSize: const Size.fromHeight(50),
-                          side: const BorderSide(color: Colors.redAccent, width: 1.4),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
-                        ),
+                  const SizedBox(height: 10),
+                  Center(
+                    child: Container(
+                      width: 84,
+                      height: 84,
+                      decoration: const BoxDecoration(
+                          gradient: AppColors.buttonGradient,
+                          shape: BoxShape.circle),
+                      child: Center(
+                        child: Text(_initials(),
+                            style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 28,
+                                fontWeight: FontWeight.w800)),
                       ),
-              ],
+                    ),
+                  ),
+                  const SizedBox(height: 26),
+                  _field(_firstNameController, s.firstName, Icons.person_outline),
+                  const SizedBox(height: 12),
+                  _field(_lastNameController, s.lastName, Icons.person_outline),
+                  const SizedBox(height: 12),
+                  _readOnlyField(s.email, _email, Icons.email_outlined),
+                  const SizedBox(height: 12),
+                  _readOnlyField(s.phoneLabel, _phone, Icons.phone_outlined),
+                  const SizedBox(height: 12),
+                  if (_role == UserRole.household)
+                    _field(_addressController, s.address, Icons.home_outlined)
+                  else ...[
+                    _field(_collectionZoneController, s.collectionZone,
+                        Icons.location_on_outlined),
+                    const SizedBox(height: 12),
+                    _field(_companyNameController, s.companyNameOptional,
+                        Icons.apartment_outlined,
+                        required: false),
+                  ],
+                  const SizedBox(height: 24),
+                  _isSaving
+                      ? const Center(
+                          child: CircularProgressIndicator(
+                              color: AppColors.greenMid, strokeWidth: 2.4))
+                      : GradientPillButton(
+                          label: s.saveChanges, onPressed: () => _save(s)),
+                ],
+              ),
             ),
           ),
         ],
@@ -191,58 +222,33 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  String _initials(String fullName) {
-    final parts = fullName.trim().split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
-    if (parts.isEmpty) return '?';
-    if (parts.length == 1) return parts.first.substring(0, 1).toUpperCase();
-    return (parts.first.substring(0, 1) + parts.last.substring(0, 1)).toUpperCase();
+  String _initials() {
+    final first = _firstNameController.text.trim();
+    final last = _lastNameController.text.trim();
+    if (first.isEmpty && last.isEmpty) return '?';
+    final a = first.isNotEmpty ? first.substring(0, 1) : '';
+    final b = last.isNotEmpty ? last.substring(0, 1) : '';
+    return (a + b).toUpperCase();
   }
 
-  Widget _roleBadge(UserRole role, String? verificationStatus, AppStrings s) {
-    final isPending = verificationStatus == 'pending';
-    final color = isPending ? const Color(0xFF8A6D00) : AppColors.greenMid;
-    final bg = isPending ? Colors.amber.withOpacity(0.15) : AppColors.greenBright.withOpacity(0.15);
-    final statusLabel = isPending ? s.statusPending : s.statusVerified;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(999)),
-      child: Text('${role.label(s)} · $statusLabel',
-          style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700, color: color)),
+  Widget _field(TextEditingController controller, String label, IconData icon,
+      {bool required = true}) {
+    return TextFormField(
+      controller: controller,
+      decoration: InputDecoration(labelText: label, prefixIcon: Icon(icon, size: 19)),
+      validator: required
+          ? (v) => (v == null || v.trim().isEmpty)
+              ? AppStrings.of(appLanguage.value).requiredField
+              : null
+          : null,
     );
   }
 
-  Widget _infoTile(IconData icon, String label, String value) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      decoration: BoxDecoration(
-        color: AppColors.card,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppColors.line, width: 1.2),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 32,
-            height: 32,
-            decoration: BoxDecoration(
-                color: AppColors.greenBright.withOpacity(0.18), borderRadius: BorderRadius.circular(10)),
-            child: Icon(icon, size: 16, color: AppColors.greenDeep),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(label,
-                    style: const TextStyle(fontSize: 10, color: AppColors.textGray, fontWeight: FontWeight.w700)),
-                Text(value.isEmpty ? '—' : value,
-                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.greenDark)),
-              ],
-            ),
-          ),
-        ],
-      ),
+  Widget _readOnlyField(String label, String value, IconData icon) {
+    return TextFormField(
+      initialValue: value,
+      enabled: false,
+      decoration: InputDecoration(labelText: label, prefixIcon: Icon(icon, size: 19)),
     );
   }
 }

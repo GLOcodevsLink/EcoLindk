@@ -20,11 +20,16 @@ class CountryDialCode {
 /// Liste de pays proposée au choix (Cameroun en premier / par défaut).
 /// Ajoute d'autres pays ici si besoin (Tchad, Gabon, RCA, Congo, Nigeria...).
 const List<CountryDialCode> kSupportedCountries = [
-  CountryDialCode(name: "Cameroun", flag: "🇨🇲", dialCode: "+237", nationalLength: 9),
-  CountryDialCode(name: "Tchad", flag: "🇹🇩", dialCode: "+235", nationalLength: 8),
-  CountryDialCode(name: "Gabon", flag: "🇬🇦", dialCode: "+241", nationalLength: 8),
-  CountryDialCode(name: "Congo", flag: "🇨🇬", dialCode: "+242", nationalLength: 9),
-  CountryDialCode(name: "Nigeria", flag: "🇳🇬", dialCode: "+234", nationalLength: 10),
+  CountryDialCode(
+      name: "Cameroun", flag: "🇨🇲", dialCode: "+237", nationalLength: 9),
+  CountryDialCode(
+      name: "Tchad", flag: "🇹🇩", dialCode: "+235", nationalLength: 8),
+  CountryDialCode(
+      name: "Gabon", flag: "🇬🇦", dialCode: "+241", nationalLength: 8),
+  CountryDialCode(
+      name: "Congo", flag: "🇨🇬", dialCode: "+242", nationalLength: 9),
+  CountryDialCode(
+      name: "Nigeria", flag: "🇳🇬", dialCode: "+234", nationalLength: 10),
 ];
 
 /// Champ téléphone avec sélecteur de pays (indicatif + validation de longueur).
@@ -36,14 +41,40 @@ class PhoneField extends StatefulWidget {
   /// à chaque changement d'indicatif ou de numéro national.
   final ValueChanged<String>? onChanged;
 
-  const PhoneField({super.key, required this.controller, this.onChanged});
+  /// Numéro complet (E.164) à pré-remplir, ex: numéro retenu d'une connexion
+  /// précédente (voir SettingsService.loadLastPhone). Ignoré si son
+  /// indicatif ne correspond à aucun pays de [kSupportedCountries].
+  final String? initialValue;
+
+  const PhoneField({
+    super.key,
+    required this.controller,
+    this.onChanged,
+    this.initialValue,
+  });
 
   @override
   State<PhoneField> createState() => _PhoneFieldState();
 }
 
 class _PhoneFieldState extends State<PhoneField> {
-  CountryDialCode _selected = kSupportedCountries.first; // Cameroun par défaut
+  late CountryDialCode _selected;
+
+  @override
+  void initState() {
+    super.initState();
+    _selected = kSupportedCountries.first; // Cameroun par défaut
+    final initial = widget.initialValue;
+    if (initial != null && initial.isNotEmpty) {
+      for (final country in kSupportedCountries) {
+        if (initial.startsWith(country.dialCode)) {
+          _selected = country;
+          widget.controller.text = initial.substring(country.dialCode.length);
+          break;
+        }
+      }
+    }
+  }
 
   void _notifyChanged() {
     widget.onChanged?.call('${_selected.dialCode}${widget.controller.text}');
@@ -66,10 +97,10 @@ class _PhoneFieldState extends State<PhoneField> {
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
               const SizedBox(height: 8),
               ...kSupportedCountries.map((c) => ListTile(
-                    leading: Text(c.flag, style: const TextStyle(fontSize: 20)),
+                    leading: Text(c.flag, style: TextStyle(fontSize: 20)),
                     title: Text(c.name),
                     trailing: Text(c.dialCode,
-                        style: const TextStyle(fontWeight: FontWeight.bold)),
+                        style: TextStyle(fontWeight: FontWeight.bold)),
                     onTap: () {
                       setState(() => _selected = c);
                       widget.controller.clear();
@@ -90,11 +121,11 @@ class _PhoneFieldState extends State<PhoneField> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text("NUMÉRO DE TÉLÉPHONE",
+        Text("NUMÉRO DE TÉLÉPHONE",
             style: TextStyle(
                 fontSize: 12.5,
                 fontWeight: FontWeight.w700,
-                color: AppColors.greenDark)),
+                color: AppColors.mainText)),
         const SizedBox(height: 6),
         Row(
           children: [
@@ -103,7 +134,8 @@ class _PhoneFieldState extends State<PhoneField> {
               borderRadius: BorderRadius.circular(12),
               onTap: _openCountryPicker,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 15),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 15),
                 decoration: BoxDecoration(
                   color: AppColors.card,
                   borderRadius: BorderRadius.circular(12),
@@ -111,10 +143,10 @@ class _PhoneFieldState extends State<PhoneField> {
                 ),
                 child: Row(
                   children: [
-                    Text(_selected.flag, style: const TextStyle(fontSize: 17)),
+                    Text(_selected.flag, style: TextStyle(fontSize: 17)),
                     const SizedBox(width: 6),
                     Text(_selected.dialCode,
-                        style: const TextStyle(fontWeight: FontWeight.bold)),
+                        style: TextStyle(fontWeight: FontWeight.bold)),
                     const Icon(Icons.keyboard_arrow_down, size: 18),
                   ],
                 ),

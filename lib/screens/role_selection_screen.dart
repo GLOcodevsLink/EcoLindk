@@ -18,7 +18,8 @@ import 'home_screen.dart';
 class RoleSelectionScreen extends StatefulWidget {
   final String uid;
   final String firstName;
-  const RoleSelectionScreen({super.key, required this.uid, required this.firstName});
+  const RoleSelectionScreen(
+      {super.key, required this.uid, required this.firstName});
 
   @override
   State<RoleSelectionScreen> createState() => _RoleSelectionScreenState();
@@ -48,60 +49,70 @@ class _RoleSelectionScreenState extends State<RoleSelectionScreen> {
   void _selectCollector() {
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => CollectorSetupScreen(uid: widget.uid, firstName: widget.firstName),
+        builder: (_) =>
+            CollectorSetupScreen(uid: widget.uid, firstName: widget.firstName),
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<AppLanguage>(
-      valueListenable: appLanguage,
-      builder: (context, lang, _) {
-        final s = AppStrings.of(lang);
-        return PopScope(
-          canPop: false,
-          child: Scaffold(
-            body: Stack(
-              children: [
-                const DecorativeLeaves(subtle: true),
-                SafeArea(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 24),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text(s.chooseRoleTitle,
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                                fontSize: 22, fontWeight: FontWeight.w800, color: AppColors.greenDark)),
-                        const SizedBox(height: 6),
-                        Text(s.chooseRoleSubtitle,
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(fontSize: 12.5, color: AppColors.textGray)),
-                        const SizedBox(height: 28),
-                        if (_isLoading)
-                          const CircularProgressIndicator(color: AppColors.greenMid)
-                        else
-                          ...UserRole.values.map(
-                            (role) => Padding(
-                              padding: const EdgeInsets.only(bottom: 14),
-                              child: _roleCard(
-                                role,
-                                s,
-                                onTap: role == UserRole.household
-                                    ? () => _selectHousehold(s)
-                                    : _selectCollector,
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: appThemeMode,
+      builder: (context, _, __) {
+        return ValueListenableBuilder<AppLanguage>(
+          valueListenable: appLanguage,
+          builder: (context, lang, _) {
+            final s = AppStrings.of(lang);
+            return PopScope(
+              canPop: false,
+              child: Scaffold(
+                body: Stack(
+                  children: [
+                    const DecorativeLeaves(subtle: true),
+                    SafeArea(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 24),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(s.chooseRoleTitle,
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                    fontSize: 22,
+                                    fontWeight: FontWeight.w800,
+                                    color: AppColors.mainText)),
+                            const SizedBox(height: 6),
+                            Text(s.chooseRoleSubtitle,
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                    fontSize: 12.5, color: AppColors.textGray)),
+                            const SizedBox(height: 28),
+                            if (_isLoading)
+                              const CircularProgressIndicator(
+                                  color: AppColors.greenMid)
+                            else
+                              ...UserRole.values.map(
+                                (role) => Padding(
+                                  padding: const EdgeInsets.only(bottom: 14),
+                                  child: _roleCard(
+                                    role,
+                                    s,
+                                    onTap: role == UserRole.household
+                                        ? () => _selectHousehold(s)
+                                        : _selectCollector,
+                                  ),
+                                ),
                               ),
-                            ),
-                          ),
-                      ],
+                          ],
+                        ),
+                      ),
                     ),
-                  ),
+                  ],
                 ),
-              ],
-            ),
-          ),
+              ),
+            );
+          },
         );
       },
     );
@@ -118,7 +129,10 @@ class _RoleSelectionScreenState extends State<RoleSelectionScreen> {
           borderRadius: BorderRadius.circular(16),
           border: Border.all(color: AppColors.line, width: 1.4),
           boxShadow: [
-            BoxShadow(color: Colors.black.withOpacity(0.03), blurRadius: 10, offset: const Offset(0, 4)),
+            BoxShadow(
+                color: Colors.black.withOpacity(0.03),
+                blurRadius: 10,
+                offset: const Offset(0, 4)),
           ],
         ),
         child: Row(
@@ -135,9 +149,12 @@ class _RoleSelectionScreenState extends State<RoleSelectionScreen> {
             const SizedBox(width: 14),
             Expanded(
               child: Text(role.label(s),
-                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: AppColors.greenDark)),
+                  style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w800,
+                      color: AppColors.mainText)),
             ),
-            const Icon(Icons.arrow_forward_ios, size: 14, color: AppColors.textGray),
+            Icon(Icons.arrow_forward_ios, size: 14, color: AppColors.textGray),
           ],
         ),
       ),

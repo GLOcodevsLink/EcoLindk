@@ -38,7 +38,207 @@ service cloud.firestore {
                          )
                        );
 
+      // Un utilisateur peut supprimer sa propre fiche — utilisé uniquement
+      // par AuthService.deleteAccount (suppression de compte, voir
+      // screens/settings/account_screen.dart).
+      allow delete: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Index public en LECTURE SEULE "téléphone -> email", pour permettre à
+    // l'onglet "Téléphone" de LoginScreen de retrouver l'email associé et
+    // se connecter normalement (Firebase Auth n'a pas de "mot de passe +
+    // téléphone"). `get` uniquement (pas `list`) : il faut déjà connaître
+    // le numéro exact pour lire l'entrée correspondante, aucune énumération
+    // possible. Écrit une seule fois à l'inscription (voir
+    // AuthService.registerAccount).
+    match /phone_lookup/{phoneNumber} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if request.auth != null;
+      // Suppression : uniquement l'entrée qui pointe vers son propre email
+      // (nettoyage lors de AuthService.deleteAccount).
+      allow delete: if request.auth != null
+                    && resource.data.email == request.auth.token.email;
+      allow update: if false;
+    }
+
+    // ------------------------------------------------------------------
+    // Module Fournisseur de déchets (collectes, portefeuille, parrainage,
+    // notifications). Principe directeur : PERSONNE n'écrit jamais dans les
+    // données à valeur (points, portefeuille, résumé de parrainage) d'un
+    // AUTRE utilisateur — chacun ne peut créditer que son propre solde,
+    // toujours avec un id de document déterministe (ex. l'id de la demande)
+    // pour qu'un second essai soit rejeté par `allow update: if false`,
+    // jamais recompté deux fois. Concrètement (voir CollectionService /
+    // WalletService / ReferralService) : le Collecteur écrit uniquement le
+    // résultat (poids, statut) sur LA DEMANDE dont il est le collecteur
+    // assigné ; c'est ensuite le Fournisseur lui-même qui réclame ses points
+    // dans SON PROPRE portefeuille en lisant ce résultat, et le filleul qui
+    // qualifie SA PROPRE ligne de parrainage — le parrain réclame alors ses
+    // points de parrainage dans SON PROPRE portefeuille à sa prochaine
+    // visite. La seule exception restante est l'envoi de notifications à un
+    // autre utilisateur (impossible à éviter sans backend) — sans impact sur
+    // l'argent ou les points, seulement un risque de spam visuel.
+    // ------------------------------------------------------------------
+
+    match /collectionRequests/{requestId} {
+      allow create: if request.auth != null
+                    && request.resource.data.householdUid == request.auth.uid
+                    && request.resource.data.status == 'pending'
+                    && request.resource.data.collectorUid == null;
+
+      // Le propriétaire voit toujours sa demande ; un collecteur peut lire
+      // celles encore libres (pour les proposer à l'acceptation) ainsi que
+      // celle qui lui est assignée.
+      allow read: if request.auth != null
+                  && (resource.data.householdUid == request.auth.uid
+                      || resource.data.collectorUid == request.auth.uid
+                      || resource.data.status == 'pending');
+
+      allow update: if request.auth != null && (
+          // Le Fournisseur annule sa propre demande tant qu'elle est libre.
+          (resource.data.householdUid == request.auth.uid
+            && resource.data.status == 'pending'
+            && request.resource.data.status == 'cancelled')
+          ||
+          // Un collecteur accepte une demande encore libre — une seule
+          // acceptation possible (le document n'a alors plus `collectorUid
+          // == null`, donc une seconde tentative simultanée échoue).
+          (resource.data.collectorUid == null
+            && resource.data.status == 'pending'
+            && request.resource.data.collectorUid == request.auth.uid
+            && request.resource.data.status == 'accepted')
+          ||
+          // Le collecteur déjà assigné fait avancer/termine la collecte —
+          // seuls les champs de résultat changent, jamais l'identité des
+          // deux parties de la demande.
+          (resource.data.collectorUid == request.auth.uid
+            && request.resource.data.householdUid == resource.data.householdUid
+            && request.resource.data.collectorUid == resource.data.collectorUid)
+      );
+
       allow delete: if false;
+    }
+
+    // Portefeuille à points — voir WalletService. Strictement personnel :
+    // seul le propriétaire écrit dans son propre solde, que ce soit pour
+    // réclamer des points (collecte, parrainage) ou les convertir.
+    match /wallets/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+
+      match /transactions/{txId} {
+        allow read, create: if request.auth != null && request.auth.uid == uid;
+        // Jamais de modification/suppression : un id de document déterministe
+        // (ex. l'id de la demande de collecte) rend un second crédit pour le
+        // même événement impossible à créer une deuxième fois.
+        allow update, delete: if false;
+      }
+
+      match /redemptions/{redemptionId} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
+      }
+    }
+
+    // Index public "code de parrainage -> propriétaire", comme phone_lookup.
+    match /referralCodes/{code} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if request.auth != null;
+      allow update, delete: if false;
+    }
+
+    // Résumé de parrainage — strictement personnel (voir wallets ci-dessus) :
+    // seul le parrain écrit son propre résumé, quand il réclame ses points
+    // (voir ReferralService.claimPendingRewards).
+    match /referrals/{referrerUid} {
+      allow read, write: if request.auth != null && request.auth.uid == referrerUid;
+
+      match /uses/{referredUid} {
+        // Le filleul crée sa propre ligne d'usage chez son parrain, à
+        // l'inscription (voir ReferralService.recordReferralUse).
+        allow create: if request.auth != null
+                      && request.auth.uid == referredUid
+                      && request.resource.data.status == 'pending';
+        allow read: if request.auth != null
+                    && (request.auth.uid == referrerUid || request.auth.uid == referredUid);
+        // Seul le filleul peut qualifier SA PROPRE ligne, une seule fois
+        // (pending -> qualified uniquement, jamais l'inverse ni un montant
+        // arbitraire — voir RewardsConfig.referralPoints, dupliqué ici en dur
+        // car les règles ne peuvent pas importer le code Dart).
+        allow update: if request.auth != null
+                      && request.auth.uid == referredUid
+                      && resource.data.status == 'pending'
+                      && request.resource.data.status == 'qualified'
+                      && request.resource.data.pointsAwarded == 50;
+        allow delete: if false;
+      }
+    }
+
+    // Centre de notifications — voir NotificationService. Chacun peut créer
+    // ses propres notifications ; un collecteur peut aussi notifier le
+    // Fournisseur de LA demande à laquelle il est réellement assigné (seule
+    // exception "écriture chez un autre utilisateur" du fichier — sans
+    // impact sur l'argent/les points, juste un risque de spam visuel).
+    match /notifications/{uid} {
+      match /items/{itemId} {
+        allow read, update: if request.auth != null && request.auth.uid == uid;
+        allow create: if request.auth != null && (
+            request.auth.uid == uid
+            || (request.resource.data.relatedRequestId is string
+                && get(/databases/$(database)/documents/collectionRequests/$(request.resource.data.relatedRequestId)).data.collectorUid == request.auth.uid
+                && get(/databases/$(database)/documents/collectionRequests/$(request.resource.data.relatedRequestId)).data.householdUid == uid)
+        );
+        allow delete: if false;
+      }
+    }
+
+    // Note laissée par le Fournisseur au Collecteur après une collecte
+    // terminée — une seule par collecte (id = requestId).
+    match /ratings/{requestId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null
+                    && request.resource.data.householdUid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // Messagerie directe Fournisseur <-> Collecteur — voir MessagingService.
+    // Un document par PAIRE d'utilisateurs (id déterministe = les deux uid
+    // triés), lisible/modifiable seulement par ses deux participants ; la
+    // paire elle-même (`participants`) ne peut plus changer une fois créée.
+    match /conversations/{conversationId} {
+      allow read: if request.auth != null
+                  && request.auth.uid in resource.data.participants;
+
+      allow create: if request.auth != null
+                    && request.resource.data.participants.size() == 2
+                    && request.auth.uid in request.resource.data.participants;
+
+      allow update: if request.auth != null
+                    && request.auth.uid in resource.data.participants
+                    && request.resource.data.participants == resource.data.participants;
+
+      allow delete: if false;
+
+      // `participants` est dupliqué sur CHAQUE message (pas seulement sur
+      // la conversation) exprès : sans ça, la règle devrait relire le
+      // document `conversations/{conversationId}` via get() pour savoir qui
+      // a le droit d'écrire — or ce document est justement écrit dans LE
+      // MÊME lot que le premier message d'une conversation, et l'ordre de
+      // visibilité d'un get() sur un document tout juste écrit dans le même
+      // batch n'est pas garanti. Dupliquer le champ rend chaque message
+      // auto-suffisant, sans dépendre de cet ordre.
+      match /messages/{messageId} {
+        allow read: if request.auth != null
+                    && request.auth.uid in resource.data.participants;
+
+        // Chacun n'envoie jamais un message qu'au nom de quelqu'un d'autre.
+        allow create: if request.auth != null
+                      && request.resource.data.senderUid == request.auth.uid
+                      && request.resource.data.participants.size() == 2
+                      && request.auth.uid in request.resource.data.participants;
+
+        allow update, delete: if false;
+      }
     }
   }
 }

@@ -16,9 +16,10 @@ class LanguageSwitcher extends StatelessWidget {
       builder: (context, lang, _) {
         final s = AppStrings.of(lang);
         return PopupMenuButton<AppLanguage>(
-          icon: Icon(Icons.language, color: iconColor ?? AppColors.greenDark),
+          icon: Icon(Icons.language, color: iconColor ?? AppColors.heading),
           color: AppColors.card,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           onSelected: (value) => appLanguage.value = value,
           itemBuilder: (context) => [
             PopupMenuItem(
@@ -26,7 +27,7 @@ class LanguageSwitcher extends StatelessWidget {
               child: Row(
                 children: [
                   if (lang == AppLanguage.fr)
-                    const Icon(Icons.check, size: 16, color: AppColors.greenDark)
+                    Icon(Icons.check, size: 16, color: AppColors.heading)
                   else
                     const SizedBox(width: 16),
                   const SizedBox(width: 8),
@@ -39,7 +40,7 @@ class LanguageSwitcher extends StatelessWidget {
               child: Row(
                 children: [
                   if (lang == AppLanguage.en)
-                    const Icon(Icons.check, size: 16, color: AppColors.greenDark)
+                    Icon(Icons.check, size: 16, color: AppColors.heading)
                   else
                     const SizedBox(width: 16),
                   const SizedBox(width: 8),

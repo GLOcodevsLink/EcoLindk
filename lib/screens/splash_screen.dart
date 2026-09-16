@@ -18,7 +18,8 @@ class SplashScreen extends StatefulWidget {
   State<SplashScreen> createState() => _SplashScreenState();
 }
 
-class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMixin {
+class _SplashScreenState extends State<SplashScreen>
+    with TickerProviderStateMixin {
   late final AnimationController _introController = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 750),
@@ -73,10 +74,13 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 AnimatedBuilder(
-                  animation: Listenable.merge([_introController, _pulseController]),
+                  animation:
+                      Listenable.merge([_introController, _pulseController]),
                   builder: (context, child) {
                     final scale = _introScale.value *
-                        (_pulseController.isAnimating ? _pulseScale.value : 1.0);
+                        (_pulseController.isAnimating
+                            ? _pulseScale.value
+                            : 1.0);
                     return Opacity(
                       opacity: _fade.value,
                       child: Transform.scale(scale: scale, child: child),

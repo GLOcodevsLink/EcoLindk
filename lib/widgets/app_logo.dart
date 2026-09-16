@@ -24,7 +24,8 @@ class AppLogo extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final asset = iconOnly ? 'assets/images/logo_icon.png' : 'assets/images/logo.png';
+    final asset =
+        iconOnly ? 'assets/images/logo_icon.png' : 'assets/images/logo.png';
     return Image.asset(
       asset,
       width: width,

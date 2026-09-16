@@ -26,14 +26,17 @@ class GradientPillButton extends StatelessWidget {
         child: OutlinedButton(
           onPressed: onPressed,
           style: OutlinedButton.styleFrom(
-            foregroundColor: AppColors.greenDark,
+            foregroundColor: AppColors.heading,
             side: const BorderSide(color: AppColors.greenMid, width: 1.6),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(999)),
           ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Text(label, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+              Text(label,
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 15)),
               if (trailingIcon != null) ...[
                 const SizedBox(width: 8),
                 Icon(trailingIcon, size: 18),
@@ -67,7 +70,9 @@ class GradientPillButton extends StatelessWidget {
             children: [
               Text(label,
                   style: const TextStyle(
-                      color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 15)),
               if (trailingIcon != null) ...[
                 const SizedBox(width: 8),
                 Icon(trailingIcon, color: Colors.white, size: 18),

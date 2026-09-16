@@ -1,4 +1,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Réglage "rapide" de l'onboarding : notifications (Android 13+), voir
+         onboarding_screen.dart. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- Module Fournisseur de déchets : photo du déchet posté (PostWasteScreen)
+         et position GPS demandée au moment de créer une demande de collecte
+         seulement — jamais à l'inscription (voir GeoHelper). -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <application
         android:label="ecolindk"
         android:name="${applicationName}"

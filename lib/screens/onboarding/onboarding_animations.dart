@@ -35,8 +35,12 @@ double _stage(Animation<double> t, double start, double end) {
   return Curves.easeOutCubic.transform(v);
 }
 
-BoxShadow _softShadow({double blur = 14, double dy = 8, double opacity = 0.22}) {
-  return BoxShadow(color: Colors.black.withOpacity(opacity), blurRadius: blur, offset: Offset(0, dy));
+BoxShadow _softShadow(
+    {double blur = 14, double dy = 8, double opacity = 0.22}) {
+  return BoxShadow(
+      color: Colors.black.withOpacity(opacity),
+      blurRadius: blur,
+      offset: Offset(0, dy));
 }
 
 // ============================================================
@@ -54,7 +58,8 @@ class AnimatedLocationIllustration extends StatelessWidget {
         final mapIn = _stage(t, 0.0, 0.22);
         final mapOut = 1 - _stage(t, 0.55, 0.68);
         final truckProgress = _stage(t, 0.30, 0.66);
-        final truckOpacity = _stage(t, 0.28, 0.38) * (1 - _stage(t, 0.62, 0.70));
+        final truckOpacity =
+            _stage(t, 0.28, 0.38) * (1 - _stage(t, 0.62, 0.70));
         final pinScale = _stage(t, 0.66, 1.0);
         final ringScale = _stage(t, 0.70, 1.0);
 
@@ -102,7 +107,8 @@ class AnimatedLocationIllustration extends StatelessWidget {
                     width: 76,
                     height: 22,
                     decoration: BoxDecoration(
-                      border: Border.all(color: _pinRed.withOpacity(0.45), width: 3),
+                      border: Border.all(
+                          color: _pinRed.withOpacity(0.45), width: 3),
                       borderRadius: BorderRadius.circular(20),
                     ),
                   ),
@@ -142,7 +148,8 @@ class _MapPainter extends CustomPainter {
       Rect.fromLTWH(70, 140, 30, 18),
     ];
     for (final b in blocks) {
-      canvas.drawRRect(RRect.fromRectAndRadius(b, const Radius.circular(4)), blockPaint);
+      canvas.drawRRect(
+          RRect.fromRectAndRadius(b, const Radius.circular(4)), blockPaint);
     }
 
     final roadPaint = Paint()
@@ -152,8 +159,10 @@ class _MapPainter extends CustomPainter {
       ..style = PaintingStyle.stroke;
     final path = Path()
       ..moveTo(6, size.height * 0.72)
-      ..quadraticBezierTo(size.width * 0.35, size.height * 0.55, size.width * 0.5, size.height * 0.62)
-      ..quadraticBezierTo(size.width * 0.75, size.height * 0.7, size.width - 6, size.height * 0.5);
+      ..quadraticBezierTo(size.width * 0.35, size.height * 0.55,
+          size.width * 0.5, size.height * 0.62)
+      ..quadraticBezierTo(size.width * 0.75, size.height * 0.7, size.width - 6,
+          size.height * 0.5);
     canvas.drawPath(path, roadPaint);
 
     final dashPaint = Paint()
@@ -174,7 +183,8 @@ class _MapPainter extends CustomPainter {
       while (distance < metric.length) {
         final len = dashArray[i % dashArray.length];
         if (draw) {
-          dest.addPath(metric.extractPath(distance, distance + len), Offset.zero);
+          dest.addPath(
+              metric.extractPath(distance, distance + len), Offset.zero);
         }
         distance += len;
         draw = !draw;
@@ -206,14 +216,16 @@ class _TruckIcon extends StatelessWidget {
 class _TruckPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
-    final bodyRect = Rect.fromLTWH(0, size.height * 0.18, size.width * 0.62, size.height * 0.5);
+    final bodyRect = Rect.fromLTWH(
+        0, size.height * 0.18, size.width * 0.62, size.height * 0.5);
     final bodyPaint = Paint()
       ..shader = const LinearGradient(
         begin: Alignment.topLeft,
         end: Alignment.bottomRight,
         colors: [_truckBody, _truckBodyDark],
       ).createShader(bodyRect);
-    canvas.drawRRect(RRect.fromRectAndRadius(bodyRect, const Radius.circular(5)), bodyPaint);
+    canvas.drawRRect(
+        RRect.fromRectAndRadius(bodyRect, const Radius.circular(5)), bodyPaint);
 
     // Cabine
     final cabPath = Path()
@@ -231,7 +243,8 @@ class _TruckPainter extends CustomPainter {
       ..lineTo(size.width * 0.94, size.height * 0.50)
       ..lineTo(size.width * 0.80, size.height * 0.50)
       ..close();
-    canvas.drawPath(windowPath, Paint()..color = Colors.white.withOpacity(0.85));
+    canvas.drawPath(
+        windowPath, Paint()..color = Colors.white.withOpacity(0.85));
 
     // Roues
     final wheelPaint = Paint()..color = const Color(0xFF2E3742);
@@ -248,7 +261,8 @@ class _TruckPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2
       ..strokeCap = StrokeCap.round;
-    canvas.drawCircle(Offset(size.width * 0.28, size.height * 0.40), 7, iconPaint);
+    canvas.drawCircle(
+        Offset(size.width * 0.28, size.height * 0.40), 7, iconPaint);
   }
 
   @override
@@ -277,11 +291,13 @@ class _PinPainter extends CustomPainter {
     final path = Path()
       ..moveTo(w / 2, h)
       ..cubicTo(w * 0.1, h * 0.65, 0, h * 0.42, 0, h * 0.36)
-      ..arcToPoint(Offset(w, h * 0.36), radius: Radius.circular(w / 2), clockwise: true)
+      ..arcToPoint(Offset(w, h * 0.36),
+          radius: Radius.circular(w / 2), clockwise: true)
       ..cubicTo(w, h * 0.42, w * 0.9, h * 0.65, w / 2, h)
       ..close();
 
-    canvas.drawShadow(path.shift(const Offset(0, 3)), Colors.black.withOpacity(0.35), 4, false);
+    canvas.drawShadow(path.shift(const Offset(0, 3)),
+        Colors.black.withOpacity(0.35), 4, false);
 
     final paint = Paint()
       ..shader = const LinearGradient(
@@ -291,9 +307,15 @@ class _PinPainter extends CustomPainter {
       ).createShader(Rect.fromLTWH(0, 0, w, h));
     canvas.drawPath(path, paint);
 
-    canvas.drawCircle(Offset(w / 2, h * 0.36), w * 0.24, Paint()..color = Colors.white);
-    canvas.drawCircle(Offset(w / 2, h * 0.36), w * 0.24,
-        Paint()..color = _pinRedDeep.withOpacity(0.25)..style = PaintingStyle.stroke..strokeWidth = 2);
+    canvas.drawCircle(
+        Offset(w / 2, h * 0.36), w * 0.24, Paint()..color = Colors.white);
+    canvas.drawCircle(
+        Offset(w / 2, h * 0.36),
+        w * 0.24,
+        Paint()
+          ..color = _pinRedDeep.withOpacity(0.25)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2);
   }
 
   @override
@@ -355,7 +377,9 @@ class AnimatedWeighIllustration extends StatelessWidget {
                         AppColors.greenBright.withOpacity(0),
                       ]),
                       boxShadow: [
-                        BoxShadow(color: AppColors.greenBright.withOpacity(0.6), blurRadius: 8),
+                        BoxShadow(
+                            color: AppColors.greenBright.withOpacity(0.6),
+                            blurRadius: 8),
                       ],
                     ),
                   ),
@@ -375,7 +399,8 @@ class AnimatedWeighIllustration extends StatelessWidget {
                         boxShadow: [_softShadow(blur: 10, dy: 4, opacity: 0.3)],
                         border: Border.all(color: Colors.white, width: 2.5),
                       ),
-                      child: const Icon(Icons.check_rounded, color: Colors.white, size: 24),
+                      child: const Icon(Icons.check_rounded,
+                          color: Colors.white, size: 24),
                     ),
                   ),
                 ),
@@ -412,7 +437,8 @@ class _ScalePainter extends CustomPainter {
 
     // Ombre portée douce au sol
     canvas.drawOval(
-      Rect.fromCenter(center: Offset(cx, size.height - 6), width: 46, height: 8),
+      Rect.fromCenter(
+          center: Offset(cx, size.height - 6), width: 46, height: 8),
       Paint()..color = Colors.black.withOpacity(0.14),
     );
 
@@ -425,7 +451,9 @@ class _ScalePainter extends CustomPainter {
       ..close();
     canvas.drawPath(
       basePath,
-      Paint()..shader = silverGradient.createShader(Rect.fromLTWH(0, size.height - 20, size.width, 20)),
+      Paint()
+        ..shader = silverGradient
+            .createShader(Rect.fromLTWH(0, size.height - 20, size.width, 20)),
     );
 
     // Pied (rectangle arrondi plein)
@@ -449,13 +477,17 @@ class _ScalePainter extends CustomPainter {
       ..strokeCap = StrokeCap.round;
     final panY = size.height * 0.58;
     canvas.drawLine(Offset(10, 24), Offset(16, panY), chainPaint);
-    canvas.drawLine(Offset(size.width - 10, 24), Offset(size.width - 16, panY), chainPaint);
+    canvas.drawLine(
+        Offset(size.width - 10, 24), Offset(size.width - 16, panY), chainPaint);
 
     // Plateaux PLEINS (ellipses avec reflet, pas juste un contour)
     void drawPan(double x) {
-      final panRect = Rect.fromCenter(center: Offset(x, panY), width: 34, height: 15);
-      canvas.drawShadow(Path()..addOval(panRect.translate(0, 3)), Colors.black.withOpacity(0.3), 3, false);
-      canvas.drawOval(panRect, Paint()..shader = silverGradient.createShader(panRect));
+      final panRect =
+          Rect.fromCenter(center: Offset(x, panY), width: 34, height: 15);
+      canvas.drawShadow(Path()..addOval(panRect.translate(0, 3)),
+          Colors.black.withOpacity(0.3), 3, false);
+      canvas.drawOval(
+          panRect, Paint()..shader = silverGradient.createShader(panRect));
       // reflet
       canvas.drawOval(
         Rect.fromCenter(center: Offset(x - 6, panY - 3), width: 12, height: 5),
@@ -467,8 +499,14 @@ class _ScalePainter extends CustomPainter {
     drawPan(size.width - 16);
 
     // Sommet (petite sphère décorative)
-    canvas.drawCircle(Offset(cx, 12), 6, Paint()..shader = silverGradient.createShader(Rect.fromCircle(center: Offset(cx, 12), radius: 6)));
-    canvas.drawCircle(Offset(cx - 2, 10), 2, Paint()..color = Colors.white.withOpacity(0.7));
+    canvas.drawCircle(
+        Offset(cx, 12),
+        6,
+        Paint()
+          ..shader = silverGradient.createShader(
+              Rect.fromCircle(center: Offset(cx, 12), radius: 6)));
+    canvas.drawCircle(
+        Offset(cx - 2, 10), 2, Paint()..color = Colors.white.withOpacity(0.7));
   }
 
   @override
@@ -497,7 +535,8 @@ class AnimatedWalletIllustration extends StatelessWidget {
         Widget fallingCoin(double progress, double dx) {
           if (progress <= 0) return const SizedBox.shrink();
           final y = -90 + 160 * progress;
-          final opacity = progress < 0.85 ? 1.0 : (1 - (progress - 0.85) / 0.15);
+          final opacity =
+              progress < 0.85 ? 1.0 : (1 - (progress - 0.85) / 0.15);
           return Positioned(
             top: 60 + y,
             left: 110 + dx,
@@ -574,30 +613,40 @@ class _GiftIcon extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(width: size, height: size, child: CustomPaint(painter: _GiftPainter()));
+    return SizedBox(
+        width: size, height: size, child: CustomPaint(painter: _GiftPainter()));
   }
 }
 
 class _GiftPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
-    final boxRect = Rect.fromLTWH(size.width * 0.08, size.height * 0.38, size.width * 0.84, size.height * 0.54);
+    final boxRect = Rect.fromLTWH(size.width * 0.08, size.height * 0.38,
+        size.width * 0.84, size.height * 0.54);
     final boxPaint = Paint()
       ..shader = const LinearGradient(colors: [_giftRed, _giftRedDark])
           .createShader(boxRect);
-    canvas.drawRRect(RRect.fromRectAndRadius(boxRect, const Radius.circular(6)), boxPaint..style = PaintingStyle.fill);
+    canvas.drawRRect(RRect.fromRectAndRadius(boxRect, const Radius.circular(6)),
+        boxPaint..style = PaintingStyle.fill);
 
-    final lidRect = Rect.fromLTWH(size.width * 0.02, size.height * 0.28, size.width * 0.96, size.height * 0.14);
-    canvas.drawRRect(RRect.fromRectAndRadius(lidRect, const Radius.circular(5)), Paint()..color = _giftRedDark);
+    final lidRect = Rect.fromLTWH(size.width * 0.02, size.height * 0.28,
+        size.width * 0.96, size.height * 0.14);
+    canvas.drawRRect(RRect.fromRectAndRadius(lidRect, const Radius.circular(5)),
+        Paint()..color = _giftRedDark);
 
     final ribbonPaint = Paint()..color = const Color(0xFFD8A857);
-    canvas.drawRect(Rect.fromLTWH(size.width * 0.44, size.height * 0.28, size.width * 0.12, size.height * 0.64), ribbonPaint);
+    canvas.drawRect(
+        Rect.fromLTWH(size.width * 0.44, size.height * 0.28, size.width * 0.12,
+            size.height * 0.64),
+        ribbonPaint);
 
     final bowPath = Path()
       ..moveTo(size.width / 2, size.height * 0.28)
-      ..cubicTo(size.width * 0.2, size.height * 0.02, size.width * 0.06, size.height * 0.18, size.width / 2, size.height * 0.28)
+      ..cubicTo(size.width * 0.2, size.height * 0.02, size.width * 0.06,
+          size.height * 0.18, size.width / 2, size.height * 0.28)
       ..moveTo(size.width / 2, size.height * 0.28)
-      ..cubicTo(size.width * 0.8, size.height * 0.02, size.width * 0.94, size.height * 0.18, size.width / 2, size.height * 0.28);
+      ..cubicTo(size.width * 0.8, size.height * 0.02, size.width * 0.94,
+          size.height * 0.18, size.width / 2, size.height * 0.28);
     canvas.drawPath(bowPath, ribbonPaint..style = PaintingStyle.fill);
   }
 
@@ -629,7 +678,12 @@ class _BrownWalletIcon extends StatelessWidget {
                 colors: [Color(0xFF7A4E2E), leather],
               ),
               borderRadius: BorderRadius.circular(10),
-              boxShadow: [BoxShadow(color: leatherDark.withOpacity(0.4), blurRadius: 6, offset: const Offset(0, 3))],
+              boxShadow: [
+                BoxShadow(
+                    color: leatherDark.withOpacity(0.4),
+                    blurRadius: 6,
+                    offset: const Offset(0, 3))
+              ],
             ),
           ),
           Positioned(
@@ -708,7 +762,8 @@ class AnimatedFundsIllustration extends StatelessWidget {
                     decoration: BoxDecoration(
                       gradient: AppColors.buttonGradient,
                       borderRadius: BorderRadius.circular(7),
-                      border: Border.all(color: Colors.white.withOpacity(0.9), width: 1.5),
+                      border: Border.all(
+                          color: Colors.white.withOpacity(0.9), width: 1.5),
                       boxShadow: [_softShadow(blur: 6, dy: 3, opacity: 0.18)],
                     ),
                     alignment: Alignment.center,
@@ -720,10 +775,13 @@ class AnimatedFundsIllustration extends StatelessWidget {
                           height: 18,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
-                            border: Border.all(color: Colors.white.withOpacity(0.85), width: 1.4),
+                            border: Border.all(
+                                color: Colors.white.withOpacity(0.85),
+                                width: 1.4),
                           ),
                           alignment: Alignment.center,
-                          child: const Icon(Icons.eco, size: 11, color: Colors.white),
+                          child: const Icon(Icons.eco,
+                              size: 11, color: Colors.white),
                         ),
                       ],
                     ),
@@ -795,9 +853,15 @@ class _CardIcon extends StatelessWidget {
             ),
           ),
           const Spacer(),
-          Container(width: size * 0.5, height: 3, color: Colors.white.withOpacity(0.85)),
+          Container(
+              width: size * 0.5,
+              height: 3,
+              color: Colors.white.withOpacity(0.85)),
           const SizedBox(height: 4),
-          Container(width: size * 0.3, height: 3, color: Colors.white.withOpacity(0.6)),
+          Container(
+              width: size * 0.3,
+              height: 3,
+              color: Colors.white.withOpacity(0.6)),
         ],
       ),
     );
