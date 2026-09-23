@@ -4,27 +4,31 @@ import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  // FieldValue.serverTimestamp() doit être créé APRÈS l'installation de la
+  // fausse plateforme Firestore, sinon fake_cloud_firestore ne le reconnaît pas.
+  setUpAll(FakeFirebaseFirestore.new);
+
   group('weightBoundsKg', () {
-    test('anciens paliers reconnus tels quels', () {
+    test('anciens paliers reconnus tels quels', () async {
       expect('< 1 kg'.weightBoundsKg, (0, 1));
       expect('1 - 5 kg'.weightBoundsKg, (1, 5));
       expect('5 - 10 kg'.weightBoundsKg, (5, 10));
       expect('10+ kg'.weightBoundsKg, (10, double.infinity));
     });
 
-    test('quantité libre : tolérance de ±40 %', () {
+    test('quantité libre : tolérance de ±40 %', () async {
       final (min, max) = '10 kg'.weightBoundsKg;
       expect(min, closeTo(6, 1e-9));
       expect(max, closeTo(14, 1e-9));
     });
 
-    test('accepte la virgule décimale', () {
+    test('accepte la virgule décimale', () async {
       final (min, max) = '2,5 kg'.weightBoundsKg;
       expect(min, closeTo(1.5, 1e-9));
       expect(max, closeTo(3.5, 1e-9));
     });
 
-    test('texte illisible ou zéro : aucune borne', () {
+    test('texte illisible ou zéro : aucune borne', () async {
       expect('beaucoup'.weightBoundsKg, (0, double.infinity));
       expect('0 kg'.weightBoundsKg, (0, double.infinity));
       expect(''.weightBoundsKg, (0, double.infinity));
@@ -32,7 +36,7 @@ void main() {
   });
 
   group('enums', () {
-    test('fromName retombe sur une valeur par défaut', () {
+    test('fromName retombe sur une valeur par défaut', () async {
       expect(WasteCategoryX.fromName('glass'), WasteCategory.glass);
       expect(WasteCategoryX.fromName('inconnu'), WasteCategory.plastic);
       expect(WasteCategoryX.fromName(null), WasteCategory.plastic);
@@ -40,7 +44,7 @@ void main() {
       expect(RequestStatusX.fromName(null), RequestStatus.pending);
     });
 
-    test('libellés FR/EN non vides', () {
+    test('libellés FR/EN non vides', () async {
       for (final c in WasteCategory.values) {
         expect(c.label(true), isNotEmpty);
         expect(c.label(false), isNotEmpty);
@@ -72,12 +76,12 @@ void main() {
           createdAt: DateTime(2026),
         );
 
-    test('reference : 6 premiers caractères en majuscules', () {
+    test('reference : 6 premiers caractères en majuscules', () async {
       expect(build('abcdef123').reference, 'ECL-ABCDEF');
       expect(build('ab').reference, 'ECL-AB');
     });
 
-    test('toCreateMap force le statut pending sans collecteur', () {
+    test('toCreateMap force le statut pending sans collecteur', () async {
       final map = build('x').toCreateMap();
       expect(map['status'], 'pending');
       expect(map['collectorUid'], isNull);

@@ -11,6 +11,7 @@ class GeminiChatTurn {
   const GeminiChatTurn({required this.fromUser, required this.text});
 }
 
+
 /// Erreurs possibles d'un appel à l'API Gemini — code stable consommé par
 /// les écrans/services appelants (jamais le message brut de l'exception, qui
 /// pourrait un jour finir par fuiter des détails techniques à l'écran).

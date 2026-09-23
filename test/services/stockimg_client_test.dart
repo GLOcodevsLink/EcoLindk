@@ -46,8 +46,8 @@ void main() {
       (429, 'rate-limited'),
       (500, 'http-500'),
     ]) {
-      test('HTTP $status → $code', () {
-        expect(
+      test('HTTP $status → $code', () async {
+        await expectLater(
           client((_) async => http.Response(jsonEncode({'message': 'non'}), status))
               .uploadFile(photo),
           throwsA(isA<StockImgException>()
@@ -57,14 +57,14 @@ void main() {
       });
     }
 
-    test('erreur réseau → network', () {
-      expect(
+    test('erreur réseau → network', () async {
+      await expectLater(
         client((_) async => throw http.ClientException('offline')).uploadFile(photo),
         throwsA(isA<StockImgException>().having((e) => e.code, 'code', 'network')),
       );
     });
 
-    test('non configuré : aucune requête envoyée', () {
+    test('non configuré : aucune requête envoyée', () async {
       var called = false;
       final c = StockImgClient(
           baseUrl: '',
@@ -73,7 +73,7 @@ void main() {
             called = true;
             return http.Response('', 201);
           }));
-      expect(
+      await expectLater(
         c.uploadFile(photo),
         throwsA(isA<StockImgException>().having((e) => e.code, 'code', 'not-configured')),
       );
@@ -106,8 +106,8 @@ void main() {
       }).deleteFile(42);
     });
 
-    test('403 → forbidden', () {
-      expect(
+    test('403 → forbidden', () async {
+      await expectLater(
         client((_) async => http.Response('', 403)).deleteFile(42),
         throwsA(isA<StockImgException>().having((e) => e.code, 'code', 'forbidden')),
       );

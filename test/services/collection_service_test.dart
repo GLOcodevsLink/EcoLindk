@@ -73,14 +73,13 @@ void main() {
       final updated = await reload(r.id);
       expect(updated.status, RequestStatus.accepted);
       expect(updated.collectorUid, 'c1');
-      expect((await notificationsOf('house')).map((n) => n['type']),
-          contains('requestAccepted'));
+      expect((await notificationsOf('house')).map((n) => n['type']), contains('requestAccepted'));
     });
 
     test('une demande ne peut être acceptée que par un seul collecteur', () async {
       final r = await post();
       await service.acceptRequest(r.id, collectorUid: 'c1', collectorName: 'Paul');
-      expect(service.acceptRequest(r.id, collectorUid: 'c2', collectorName: 'Marie'),
+      await expectLater(service.acceptRequest(r.id, collectorUid: 'c2', collectorName: 'Marie'),
           throwsStateError);
       expect((await reload(r.id)).collectorUid, 'c1');
     });
@@ -88,8 +87,8 @@ void main() {
     test('une demande annulée ne peut pas être acceptée', () async {
       final r = await post();
       await service.cancelRequest(r.id);
-      expect(service.acceptRequest(r.id, collectorUid: 'c1', collectorName: 'Paul'),
-          throwsStateError);
+      await expectLater(
+          service.acceptRequest(r.id, collectorUid: 'c1', collectorName: 'Paul'), throwsStateError);
     });
   });
 
@@ -102,10 +101,10 @@ void main() {
     });
 
     test('poids hors de la fourchette déclarée → refusé', () async {
-      expect(service.submitCollectionResult(id, weightKg: 10, priceFcfa: 500),
-          throwsFormatException);
-      expect(service.submitCollectionResult(id, weightKg: 1, priceFcfa: 500),
-          throwsFormatException);
+      await expectLater(
+          service.submitCollectionResult(id, weightKg: 10, priceFcfa: 500), throwsFormatException);
+      await expectLater(
+          service.submitCollectionResult(id, weightKg: 1, priceFcfa: 500), throwsFormatException);
       expect((await reload(id)).status, RequestStatus.accepted);
     });
 
@@ -123,8 +122,7 @@ void main() {
       expect(r.valueFcfa, 300);
       expect(r.pointsEarned, 40); // plastique : 10 pts/kg × 4 kg
       expect(r.pendingWeightKg, isNull);
-      expect((await notificationsOf('c1')).map((n) => n['type']),
-          contains('requestCompleted'));
+      expect((await notificationsOf('c1')).map((n) => n['type']), contains('requestCompleted'));
     });
 
     test('refus → retour à accepted et le collecteur est prévenu', () async {
@@ -133,8 +131,7 @@ void main() {
       final r = await reload(id);
       expect(r.status, RequestStatus.accepted);
       expect(r.pendingWeightKg, isNull);
-      expect((await notificationsOf('c1')).map((n) => n['type']),
-          contains('collectionRejected'));
+      expect((await notificationsOf('c1')).map((n) => n['type']), contains('collectionRejected'));
     });
 
     test('confirmer sans soumission préalable ne fait rien', () async {

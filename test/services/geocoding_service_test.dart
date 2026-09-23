@@ -33,35 +33,38 @@ void main() {
   Matcher throwsCode(String code) =>
       throwsA(isA<GeocodingException>().having((e) => e.code, 'code', code));
 
-  test('adresse vide : aucune requête', () {
-    expect(service((_) async => fail('ne doit pas appeler')).geocode('   '),
+  test('adresse vide : aucune requête', () async {
+    await expectLater(service((_) async => fail('ne doit pas appeler')).geocode('   '),
         throwsCode('empty-address'));
   });
 
-  test('aucun résultat → not-found', () {
-    expect(service((_) async => http.Response('[]', 200)).geocode('xyz'),
+  test('aucun résultat → not-found', () async {
+    await expectLater(
+        service((_) async => http.Response('[]', 200)).geocode('xyz'), throwsCode('not-found'));
+  });
+
+  test('coordonnées illisibles → not-found', () async {
+    await expectLater(
+        service((_) async => http.Response(
+            jsonEncode([
+              {'lat': 'a', 'lon': 'b'}
+            ]),
+            200)).geocode('xyz'),
         throwsCode('not-found'));
   });
 
-  test('coordonnées illisibles → not-found', () {
-    expect(
-        service((_) async => http.Response(jsonEncode([{'lat': 'a', 'lon': 'b'}]), 200))
-            .geocode('xyz'),
-        throwsCode('not-found'));
+  test('HTTP ≠ 200 → http-error', () async {
+    await expectLater(
+        service((_) async => http.Response('', 503)).geocode('xyz'), throwsCode('http-error'));
   });
 
-  test('HTTP ≠ 200 → http-error', () {
-    expect(service((_) async => http.Response('', 503)).geocode('xyz'),
+  test('réponse non JSON → http-error', () async {
+    await expectLater(service((_) async => http.Response('<html>', 200)).geocode('xyz'),
         throwsCode('http-error'));
   });
 
-  test('réponse non JSON → http-error', () {
-    expect(service((_) async => http.Response('<html>', 200)).geocode('xyz'),
-        throwsCode('http-error'));
-  });
-
-  test('pas de réseau → network', () {
-    expect(service((_) async => throw http.ClientException('offline')).geocode('xyz'),
+  test('pas de réseau → network', () async {
+    await expectLater(service((_) async => throw http.ClientException('offline')).geocode('xyz'),
         throwsCode('network'));
   });
 }

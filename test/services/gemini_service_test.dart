@@ -27,9 +27,9 @@ void main() {
   group('sans clé API', () {
     setUp(() => dotenv.loadFromString(envString: 'GEMINI_API_KEY=YOUR_GEMINI_API_KEY_HERE'));
 
-    test('aucune requête envoyée → no-api-key', () {
+    test('aucune requête envoyée → no-api-key', () async {
       final s = GeminiService(client: MockClient((_) async => fail('ne doit pas appeler')));
-      expect(s.chat(history: const [], message: 'hi', systemInstruction: ''),
+      await expectLater(s.chat(history: const [], message: 'hi', systemInstruction: ''),
           throwsCode('no-api-key'));
     });
   });
@@ -47,8 +47,10 @@ void main() {
       }));
 
       final reply = await s.chat(
-        history: const [GeminiChatTurn(fromUser: true, text: 'Salut'),
-          GeminiChatTurn(fromUser: false, text: 'Bonjour')],
+        history: const [
+          GeminiChatTurn(fromUser: true, text: 'Salut'),
+          GeminiChatTurn(fromUser: false, text: 'Bonjour')
+        ],
         message: 'Comment trier le verre ?',
         systemInstruction: 'Tu es EcoLindk.',
       );
@@ -61,23 +63,23 @@ void main() {
       expect(body['systemInstruction']['parts'][0]['text'], 'Tu es EcoLindk.');
     });
 
-    test('réponse vide → invalid-response', () {
+    test('réponse vide → invalid-response', () async {
       final s = GeminiService(client: MockClient((_) async => geminiReply('  ')));
-      expect(s.chat(history: const [], message: 'x', systemInstruction: ''),
+      await expectLater(s.chat(history: const [], message: 'x', systemInstruction: ''),
           throwsCode('invalid-response'));
     });
 
-    test('HTTP ≠ 200 → http-error', () {
+    test('HTTP ≠ 200 → http-error', () async {
       final s = GeminiService(client: MockClient((_) async => http.Response('', 429)));
-      expect(s.chat(history: const [], message: 'x', systemInstruction: ''),
-          throwsCode('http-error'));
+      await expectLater(
+          s.chat(history: const [], message: 'x', systemInstruction: ''), throwsCode('http-error'));
     });
 
-    test('pas de réseau → network', () {
-      final s = GeminiService(
-          client: MockClient((_) async => throw http.ClientException('offline')));
-      expect(s.chat(history: const [], message: 'x', systemInstruction: ''),
-          throwsCode('network'));
+    test('pas de réseau → network', () async {
+      final s =
+          GeminiService(client: MockClient((_) async => throw http.ClientException('offline')));
+      await expectLater(
+          s.chat(history: const [], message: 'x', systemInstruction: ''), throwsCode('network'));
     });
 
     test('classifyWasteImage envoie l\'image en base64 et décode le JSON', () async {
@@ -87,8 +89,8 @@ void main() {
         return geminiReply('{"category":"glass","confidence":0.8,"estimatedWeightKg":2}');
       }));
 
-      final json = await s.classifyWasteImage(
-          imageBytes: [1, 2, 3], mimeType: 'image/png', prompt: 'Classe');
+      final json = await s
+          .classifyWasteImage(imageBytes: [1, 2, 3], mimeType: 'image/png', prompt: 'Classe');
 
       expect(json['category'], 'glass');
       final parts = body['contents'][0]['parts'] as List;
@@ -97,9 +99,9 @@ void main() {
       expect(body['generationConfig']['responseMimeType'], 'application/json');
     });
 
-    test('classifyWasteImage : texte non JSON → invalid-response', () {
+    test('classifyWasteImage : texte non JSON → invalid-response', () async {
       final s = GeminiService(client: MockClient((_) async => geminiReply('pas du json')));
-      expect(s.classifyWasteImage(imageBytes: [1], mimeType: 'image/jpeg', prompt: ''),
+      await expectLater(s.classifyWasteImage(imageBytes: [1], mimeType: 'image/jpeg', prompt: ''),
           throwsCode('invalid-response'));
     });
   });

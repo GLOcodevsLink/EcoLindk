@@ -27,10 +27,8 @@ class ReferralService {
 
   DocumentReference<Map<String, dynamic>> _referrer(String uid) =>
       _firestore.collection('referrals').doc(uid);
-  CollectionReference<Map<String, dynamic>> _uses(String uid) =>
-      _referrer(uid).collection('uses');
-  CollectionReference<Map<String, dynamic>> get _codes =>
-      _firestore.collection('referralCodes');
+  CollectionReference<Map<String, dynamic>> _uses(String uid) => _referrer(uid).collection('uses');
+  CollectionReference<Map<String, dynamic>> get _codes => _firestore.collection('referralCodes');
 
   /// Retourne le code existant de [uid], ou en alloue un nouveau (3 lettres
   /// dérivées de [firstName] + 3 chiffres), garanti unique via une
@@ -53,8 +51,7 @@ class ReferralService {
         final snap = await tx.get(codeDoc);
         if (snap.exists) return false;
         tx.set(codeDoc, {'ownerUid': uid});
-        tx.set(_referrer(uid),
-            {'code': code, 'referralsCount': 0, 'pointsEarned': 0},
+        tx.set(_referrer(uid), {'code': code, 'referralsCount': 0, 'pointsEarned': 0},
             SetOptions(merge: true));
         return true;
       });
@@ -132,9 +129,8 @@ class ReferralService {
   /// aucune de ces écritures ne touche jamais les données d'un autre
   /// utilisateur. Idempotent par filleul (id de transaction déterministe).
   Future<void> claimPendingRewards(String referrerUid) async {
-    final uses = await _uses(referrerUid)
-        .where('status', isEqualTo: ReferralStatus.qualified.name)
-        .get();
+    final uses =
+        await _uses(referrerUid).where('status', isEqualTo: ReferralStatus.qualified.name).get();
 
     for (final useDoc in uses.docs) {
       final referredUid = useDoc.id;
@@ -156,7 +152,9 @@ class ReferralService {
         final referrerSnap = await tx.get(referrerRef);
         final balance = (walletSnap.data()?['pointsBalance'] as num?)?.toInt() ?? 0;
         final lifetime = (walletSnap.data()?['lifetimeEarned'] as num?)?.toInt() ?? balance;
-        tx.set(walletRef, {
+        tx.set(
+            walletRef,
+            {
               'pointsBalance': balance + RewardsConfig.referralPoints,
               'lifetimeEarned': lifetime + RewardsConfig.referralPoints,
             },

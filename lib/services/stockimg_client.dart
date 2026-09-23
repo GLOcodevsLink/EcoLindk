@@ -42,8 +42,7 @@ class StockImgClient {
         'Accept': 'application/json',
       };
 
-  Uri _uri(String path) =>
-      Uri.parse('${baseUrl.replaceAll(RegExp(r'/+$'), '')}/api/v1/$path');
+  Uri _uri(String path) => Uri.parse('${baseUrl.replaceAll(RegExp(r'/+$'), '')}/api/v1/$path');
 
   void _ensureConfigured() {
     if (baseUrl.isEmpty || apiKey.isEmpty) {
@@ -60,8 +59,7 @@ class StockImgClient {
 
     final http.Response response;
     try {
-      response = await http.Response.fromStream(
-          await _http.send(request).timeout(_timeout));
+      response = await http.Response.fromStream(await _http.send(request).timeout(_timeout));
     } on SocketException {
       throw const StockImgException('network');
     } on http.ClientException {
@@ -85,8 +83,7 @@ class StockImgClient {
   /// Supprime un fichier par son id.
   Future<void> deleteFile(int id) async {
     _ensureConfigured();
-    final response =
-        await _http.delete(_uri('files/$id'), headers: _headers).timeout(_timeout);
+    final response = await _http.delete(_uri('files/$id'), headers: _headers).timeout(_timeout);
     if (response.statusCode != 204) _throwFor(response);
   }
 
