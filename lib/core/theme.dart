@@ -1,4 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
+
+/// Police de toute l'application (demande explicite : Poppins "pour un rendu
+/// plus beau"). Posée une seule fois ici sur `ThemeData.fontFamily` : tous
+/// les `Text`/`TextStyle` de l'app qui ne précisent pas leur propre
+/// `fontFamily` en héritent automatiquement, sans devoir toucher chaque écran.
+final String? _poppinsFontFamily = GoogleFonts.poppins().fontFamily;
 
 /// Mode de thème (clair/sombre) actuellement sélectionné, observable dans
 /// toute l'application. Changer cette valeur (ex: appThemeMode.value =
@@ -34,15 +41,25 @@ class AppColors {
   // qui écrasait le contraste de tout ce qui est dessiné en couleur fixe
   // (logos, icônes, badges) par-dessus.
   static const Color darkBackground =
-      Color(0xFF1B2A21); // fond sombre (onboarding + mode sombre)
+      Color(0xFF1B2A21); // fond sombre (mode sombre)
   static const Color darkSurface =
       Color(0xFF22352A); // cartes/éléments sur fond sombre
+  // Fond dédié à l'onboarding — plus clair que [darkBackground] (demande
+  // explicite : "rend les onboarding page moins sombre, les écritures
+  // doivent être bien visible") tout en restant assez foncé pour que le
+  // texte blanc utilisé sur ces slides garde un excellent contraste.
+  static const Color onboardingBackground = Color(0xFF2F4A3A);
+  static const Color onboardingSurface = Color(0xFF3A5A44);
+  // Palette verte adoucie en vert PASTEL (demande explicite du professeur :
+  // "il préfère un vert pastel et en général des couleurs pastel" — remplace
+  // l'ancien vert foncé/vif par des tons doux, moins saturés, tout en
+  // gardant assez de contraste pour rester lisible en texte/icônes.
   static const Color greenDark =
-      Color(0xFF094824); // vert de marque le plus foncé
-  static const Color greenDeep = Color(0xFF0B622F); // début dégradé boutons
-  static const Color greenMid = Color(0xFF2F7E23); // milieu dégradé / logo
+      Color(0xFF4A7C59); // vert de marque le plus foncé (pastel, titres)
+  static const Color greenDeep = Color(0xFF6FA98A); // début dégradé boutons
+  static const Color greenMid = Color(0xFF8FC1A4); // milieu dégradé / logo
   static const Color greenBright =
-      Color(0xFF509919); // vert vif, feuilles, accents
+      Color(0xFFB9DDC4); // vert pastel clair, feuilles, accents
 
   // ---- Couleurs claires (mode clair) ----
   // `surface` (fond des écrans) volontairement un cran plus soutenu qu'un
@@ -61,9 +78,11 @@ class AppColors {
   // (demande explicite suivante : "the background of the app should be
   // slightly deeper") — un cran seulement, F5FAF7 étant presque
   // indiscernable du blanc une fois posé derrière les cartes blanches.
+  // Éclairci encore (demande explicite : "éclaircis le background de tout
+  // l'app") — un cran de plus vers le blanc que la version précédente.
   static const Color _backgroundLight = Color(0xFFFFFFFF);
-  static const Color _surfaceLight = Color(0xFFECF6F0);
-  static const Color _cardLight = Color(0xFFFAFDFB);
+  static const Color _surfaceLight = Color(0xFFF3FAF6);
+  static const Color _cardLight = Color(0xFFFCFEFD);
   static const Color _textGrayLight = Color(0xFF6B7280);
   static const Color _lineLight = Color(0xFFD6E3DA);
   static const Color _inputFillLight = Color(0xFFECF5EF);
@@ -83,6 +102,22 @@ class AppColors {
 
   /// Fond secondaire (légèrement teinté), utilisé derrière les cartes.
   static Color get surface => isDarkMode ? darkSurface : _surfaceLight;
+
+  // Vert MOINS pastel que le reste de l'app — demande explicite : "je ne
+  // t'ai pas demandé de changer le design de la page d'inscription et de
+  // connexion, tout le background de l'app doit rester blanc... sauf que
+  // toutes les parties qui étaient en vert sur ces deux pages doivent le
+  // rester mais en un vert moins pastel que le reste de l'application."
+  // Fond INCHANGÉ (reste le blanc doux général, voir [surface]) — seuls les
+  // éléments verts (boutons, icônes de rôle) de Connexion/Inscription
+  // utilisent ce dégradé plus soutenu, voir [authButtonGradient].
+  static const Color authGreenDeep = Color(0xFF0F7A3D);
+  static const Color authGreenMid = Color(0xFF1E9950);
+  static const LinearGradient authButtonGradient = LinearGradient(
+    begin: Alignment.centerLeft,
+    end: Alignment.centerRight,
+    colors: [authGreenDeep, authGreenMid],
+  );
 
   /// Fond des cartes/tuiles.
   static Color get card => isDarkMode ? _cardDark : _cardLight;
@@ -120,6 +155,18 @@ class AppColors {
     colors: [greenDeep, greenMid],
   );
 
+  // Vert D'ORIGINE du bouton "Commencer" de la Landing Page (demande
+  // explicite : "garde la même couleur qui était premièrement là") — gardé
+  // tel quel pour CE bouton précis, alors que [buttonGradient] a depuis été
+  // adouci en vert pastel pour le reste de l'app.
+  static const Color landingStartGreenDeep = Color(0xFF0B622F);
+  static const Color landingStartGreenMid = Color(0xFF2F7E23);
+  static const LinearGradient landingStartButtonGradient = LinearGradient(
+    begin: Alignment.centerLeft,
+    end: Alignment.centerRight,
+    colors: [landingStartGreenDeep, landingStartGreenMid],
+  );
+
   /// Vert plus clair que [buttonGradient] — réservé aux "logos" (icônes des
   /// petites boîtes : actions rapides, statistiques, réglages, listes…)
   /// dans TOUTE l'app, pour qu'ils restent cohérents entre eux sans jamais
@@ -153,10 +200,10 @@ class AppColors {
   static const Color pointsCardButtonText = greenDeep;
 
   /// Jaune/ambré partagé — SEULE couleur avec le vert autorisée sur "Cette
-  /// semaine" (donut) et "Convertir mes points" (demande explicite : plus
-  /// de bleu/violet/orange sur ces éléments-là, seulement vert et jaune,
-  /// une seule et même teinte de jaune partout).
-  static const Color amber = Color(0xFFE0A800);
+  /// semaine" (donut) (demande explicite : plus de bleu/violet/orange sur
+  /// cet élément-là, seulement vert et jaune, une seule et même teinte de
+  /// jaune partout). Adouci en pastel avec le reste de la palette.
+  static const Color amber = Color(0xFFEAC46E);
 }
 
 class AppTextStyles {
@@ -202,7 +249,8 @@ final ThemeData ecoLindkTheme = ThemeData(
   // ça, ces écrans retombaient sur du blanc pur malgré [_surfaceLight]
   // déjà renforcé partout ailleurs. Un seul et même fond, vraiment partout.
   scaffoldBackgroundColor: AppColors._surfaceLight,
-  fontFamily: 'Roboto',
+  fontFamily: _poppinsFontFamily,
+  textTheme: GoogleFonts.poppinsTextTheme(),
   colorScheme: ColorScheme.fromSeed(
     seedColor: AppColors.greenMid,
     brightness: Brightness.light,
@@ -217,7 +265,8 @@ final ThemeData ecoLindkTheme = ThemeData(
 final ThemeData ecoLindkDarkTheme = ThemeData(
   brightness: Brightness.dark,
   scaffoldBackgroundColor: AppColors.darkBackground,
-  fontFamily: 'Roboto',
+  fontFamily: _poppinsFontFamily,
+  textTheme: GoogleFonts.poppinsTextTheme(ThemeData(brightness: Brightness.dark).textTheme),
   colorScheme: ColorScheme.fromSeed(
     seedColor: AppColors.greenMid,
     brightness: Brightness.dark,

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:remixicon/remixicon.dart';
 import '../core/l10n/strings.dart';
 
 /// Deux types d'acteurs peuvent s'inscrire sur EcoLindk : Ménage et Collecteur.
@@ -24,9 +25,9 @@ extension UserRoleLabel on UserRole {
   IconData get icon {
     switch (this) {
       case UserRole.household:
-        return Icons.home_outlined;
+        return RemixIcons.home_fill;
       case UserRole.collector:
-        return Icons.local_shipping_outlined;
+        return RemixIcons.truck_fill;
     }
   }
 }

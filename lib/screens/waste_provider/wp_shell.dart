@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:remixicon/remixicon.dart';
 import '../../core/l10n/app_language.dart';
 import '../../core/l10n/strings.dart';
 import '../../core/theme.dart';
@@ -10,6 +11,7 @@ import '../../services/collection_service.dart';
 import '../../services/messaging_service.dart';
 import '../../services/notification_service.dart';
 import '../../widgets/decorative_leaves.dart';
+import '../../widgets/modern_bottom_nav.dart';
 import '../../widgets/points_card.dart';
 import '../../widgets/wp_common.dart';
 import '../settings/settings_screen.dart';
@@ -80,102 +82,42 @@ class _WasteProviderShellState extends State<WasteProviderShell> {
           body: IndexedStack(index: _index, children: tabs),
           floatingActionButton: _index == 0 ? _postWasteFab(fr) : null,
           floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
-          // Barre pleine largeur, collée au tout dernier pixel de l'écran —
-          // comme sur WhatsApp : PAS de SafeArea englobante ni de marge
-          // basse (ça laisserait voir le fond de la page sous la barre,
-          // dans la zone du geste "retour"/swipe du téléphone). Le fond
-          // coloré s'étend jusqu'en bas ; seul le contenu (icônes/labels)
-          // est remonté au-dessus de cette zone via un padding intérieur
-          // égal à l'inset système, pour rester atteignable au pouce.
-          bottomNavigationBar: Container(
-            width: double.infinity,
-            padding: EdgeInsets.fromLTRB(
-                6, 10, 6, 10 + MediaQuery.of(context).padding.bottom),
-            decoration: BoxDecoration(
-              color: AppColors.card,
-              boxShadow: [
-                BoxShadow(
-                    color: Colors.black.withOpacity(0.08),
-                    blurRadius: 16,
-                    offset: const Offset(0, -4)),
-              ],
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: [
-                _navItem(Icons.home_rounded, s.navHome, 0),
-                _navItem(Icons.account_balance_wallet_outlined, s.navWallet, 1),
-                _scanButton(fr),
-                // Badge = messages non lus (voir MessagingService), pas des
-                // notifications (voir cloche du dashboard pour celles-ci —
-                // deux compteurs bien distincts).
-                _navItem(Icons.chat_bubble_outline, s.navMessages, 2,
-                    badge: AuthService().currentUser == null
-                        ? null
-                        : MessagingService().watchTotalUnread(AuthService().currentUser!.uid)),
-                _navItem(Icons.settings_outlined, s.navSettings, 3),
-              ],
-            ),
+          // Barre "flottante" façon Material 3 (voir doc de la classe et de
+          // [ModernBottomNav]) : détachée des bords, indicateur en pilule
+          // derrière l'onglet actif — remplace l'ancienne barre carrée
+          // collée aux bords, jugée "trop classique".
+          bottomNavigationBar: ModernBottomNav(
+            currentIndex: _index,
+            onTap: _goToTab,
+            centerAction: _scanButton(fr),
+            items: [
+              ModernNavItem(
+                  icon: RemixIcons.home_line,
+                  activeIcon: RemixIcons.home_fill,
+                  label: s.navHome),
+              ModernNavItem(
+                  icon: RemixIcons.wallet_line,
+                  activeIcon: RemixIcons.wallet_fill,
+                  label: s.navWallet),
+              // Badge = messages non lus (voir MessagingService), pas des
+              // notifications (voir cloche du dashboard pour celles-ci —
+              // deux compteurs bien distincts).
+              ModernNavItem(
+                  icon: RemixIcons.message_line,
+                  activeIcon: RemixIcons.message_fill,
+                  label: s.navMessages,
+                  badge: AuthService().currentUser == null
+                      ? null
+                      : MessagingService()
+                          .watchTotalUnread(AuthService().currentUser!.uid)),
+              ModernNavItem(
+                  icon: RemixIcons.settings_line,
+                  activeIcon: RemixIcons.settings_fill,
+                  label: s.navSettings),
+            ],
           ),
         );
       },
-    );
-  }
-
-  Widget _navItem(IconData icon, String label, int index,
-      {Stream<int>? badge}) {
-    final active = _index == index;
-    final color = active ? AppColors.greenMid : AppColors.textGray;
-    return GestureDetector(
-      onTap: () => _goToTab(index),
-      behavior: HitTestBehavior.opaque,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        decoration: BoxDecoration(
-          color: active
-              ? AppColors.greenMid.withOpacity(0.12)
-              : Colors.transparent,
-          borderRadius: BorderRadius.circular(16),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Stack(
-              clipBehavior: Clip.none,
-              children: [
-                Icon(icon, size: 23, color: color),
-                if (badge != null)
-                  StreamBuilder<int>(
-                    stream: badge,
-                    builder: (context, snap) {
-                      final count = snap.data ?? 0;
-                      if (count == 0) return const SizedBox.shrink();
-                      return Positioned(
-                        right: -5,
-                        top: -4,
-                        child: Container(
-                          padding: const EdgeInsets.all(3),
-                          decoration: const BoxDecoration(
-                              color: Colors.redAccent, shape: BoxShape.circle),
-                          child: Text(count > 9 ? '9+' : '$count',
-                              style: const TextStyle(
-                                  fontSize: 8.5,
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold)),
-                        ),
-                      );
-                    },
-                  ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text(label,
-                style: TextStyle(
-                    fontSize: 10.5, color: color, fontWeight: FontWeight.w700)),
-          ],
-        ),
-      ),
     );
   }
 
@@ -186,7 +128,7 @@ class _WasteProviderShellState extends State<WasteProviderShell> {
     return GestureDetector(
       onTap: _openScan,
       child: Transform.translate(
-        offset: const Offset(0, -12),
+        offset: const Offset(0, -20),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -207,15 +149,15 @@ class _WasteProviderShellState extends State<WasteProviderShell> {
                         offset: const Offset(0, 5)),
                   ],
                 ),
-                child: const Icon(Icons.qr_code_scanner_rounded,
-                    color: Colors.white, size: 25),
+                child: const Icon(RemixIcons.qr_code_fill,
+                    color: Colors.white, size: 24),
               ),
             ),
             const SizedBox(height: 2),
             Text(fr ? "Scanner" : "Scan",
                 style: TextStyle(
                     fontSize: 10.5,
-                    color: AppColors.greenMid,
+                    color: AppColors.greenDark,
                     fontWeight: FontWeight.w800)),
           ],
         ),
@@ -223,41 +165,33 @@ class _WasteProviderShellState extends State<WasteProviderShell> {
     );
   }
 
-  /// Bouton "Poster un déchet" — une boîte plus grande (icône + texte) au
-  /// lieu d'un simple rond avec un "+", pour rester lisible sans ambiguïté.
+  /// Bouton "Ajouter" — petit bouton compact (demande explicite : juste
+  /// "Ajouter", plus le libellé long "Ajouter au recyclage" d'avant).
   Widget _postWasteFab(bool fr) {
     return GestureDetector(
       onTap: _openPostWaste,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         decoration: BoxDecoration(
           gradient: AppColors.buttonGradient,
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(999),
           boxShadow: [
             BoxShadow(
                 color: AppColors.greenMid.withOpacity(0.45),
-                blurRadius: 16,
-                offset: const Offset(0, 6)),
+                blurRadius: 14,
+                offset: const Offset(0, 5)),
           ],
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              width: 32,
-              height: 32,
-              decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.22),
-                  borderRadius: BorderRadius.circular(10)),
-              child:
-                  const Icon(Icons.add_rounded, color: Colors.white, size: 22),
-            ),
-            const SizedBox(width: 10),
-            Text(fr ? "Ajouter au recyclage" : "Add to recycle list",
+            const Icon(RemixIcons.add_fill, color: Colors.white, size: 16),
+            const SizedBox(width: 6),
+            Text(fr ? "Ajouter" : "Add",
                 style: const TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.w800,
-                    fontSize: 13.5)),
+                    fontSize: 13)),
           ],
         ),
       ),
@@ -267,11 +201,11 @@ class _WasteProviderShellState extends State<WasteProviderShell> {
 
 /// Contenu de l'onglet Accueil, reproduit d'après la maquette de référence
 /// fournie par l'utilisateur : carte "Mes points" en dégradé (trophée +
-/// feuilles), une carte par option de conversion juste en dessous, bandeau
-/// Assistant IA (dans la page, pas flottant), actions rapides (Mes
-/// collectes / Mes postes) et impact (nombre de collectes / kg recyclés).
-/// Pas de section "Demande en cours" ici — voir MyCollectionsScreen
-/// (onglet "En cours") pour le suivi détaillé.
+/// feuilles), bandeau Assistant IA (dans la page, pas flottant), actions
+/// rapides (Mes collectes / Mes postes) et impact (nombre de collectes / kg
+/// recyclés). Plus de section "Convertir mes points" (demande explicite :
+/// retirée de l'accueil). Pas de section "Demande en cours" ici — voir
+/// MyCollectionsScreen (onglet "En cours") pour le suivi détaillé.
 class _WpDashboardTab extends StatefulWidget {
   final void Function(int tabIndex) onOpenTab;
   const _WpDashboardTab({required this.onOpenTab});
@@ -320,18 +254,16 @@ class _WpDashboardTabState extends State<_WpDashboardTab> {
                 const DecorativeLeaves(subtle: true),
                 SafeArea(
                   child: ListView(
-                    // Marge basse généreuse : le bouton "Ajouter au
-                    // recyclage" flotte par-dessus (voir
+                    // Marge basse : le bouton "Ajouter" et la barre de
+                    // navigation flottent par-dessus (voir
                     // WasteProviderShell), pas dans le flux du scroll — sans
                     // cette réserve, le dernier contenu (la boîte "Colis
-                    // collectés", plus haute depuis l'ajout du graphique
-                    // hebdomadaire) se retrouverait caché dessous, ou le
-                    // bouton la toucherait, une fois le scroll en bas.
-                    padding: const EdgeInsets.fromLTRB(20, 8, 20, 240),
+                    // collectés") se retrouverait caché dessous.
+                    padding: const EdgeInsets.fromLTRB(20, 8, 20, 140),
                     children: [
                       Row(
                         children: [
-                          Icon(Icons.menu, color: AppColors.heading),
+                          Icon(RemixIcons.menu_line, color: AppColors.heading),
                           const SizedBox(width: 12),
                           Expanded(
                             child: Column(
@@ -358,7 +290,7 @@ class _WpDashboardTabState extends State<_WpDashboardTab> {
                             child: Stack(
                               clipBehavior: Clip.none,
                               children: [
-                                Icon(Icons.notifications_none_rounded,
+                                Icon(RemixIcons.notification_line,
                                     color: AppColors.heading, size: 25),
                                 if (uid.isNotEmpty)
                                   StreamBuilder<int>(
@@ -395,7 +327,7 @@ class _WpDashboardTabState extends State<_WpDashboardTab> {
                             child: CircleAvatar(
                               radius: 18,
                               backgroundColor: AppColors.line,
-                              child: Icon(Icons.person,
+                              child: Icon(RemixIcons.user_fill,
                                   size: 20, color: AppColors.textGray),
                             ),
                           ),
@@ -411,17 +343,6 @@ class _WpDashboardTabState extends State<_WpDashboardTab> {
                             fr ? "Voir le portefeuille" : "View wallet",
                         onButtonTap: () => widget.onOpenTab(1),
                       ),
-                      const SizedBox(height: 16),
-
-                      // ---- Convertir mes points : une carte par option ----
-                      Text(fr ? "Convertir mes points" : "Convert my points",
-                          style: TextStyle(
-                              fontSize: 14.5,
-                              fontWeight: FontWeight.w800,
-                              color: AppColors.heading)),
-                      const SizedBox(height: 10),
-                      _ConvertPointsGrid(
-                          fr: fr, onOpenWallet: () => widget.onOpenTab(1)),
                       const SizedBox(height: 22),
 
                       // Assistant IA : plus de bandeau ici — un petit bouton
@@ -445,14 +366,14 @@ class _WpDashboardTabState extends State<_WpDashboardTab> {
                         childAspectRatio: 2.3,
                         children: [
                           _actionCard(
-                              Icons.local_shipping_outlined,
+                              RemixIcons.truck_fill,
                               fr ? "Mes collectes" : "My collections",
                               () => Navigator.of(context).push(
                                   MaterialPageRoute(
                                       builder: (_) =>
                                           const MyCollectionsScreen()))),
                           _actionCard(
-                              Icons.grid_view_rounded,
+                              RemixIcons.apps_fill,
                               fr ? "Mes postes" : "My posts",
                               () => Navigator.of(context).push(
                                   MaterialPageRoute(
@@ -480,7 +401,7 @@ class _WpDashboardTabState extends State<_WpDashboardTab> {
                                 decoration: const BoxDecoration(
                                     color: Colors.white,
                                     shape: BoxShape.circle),
-                                child: const Icon(Icons.smart_toy_outlined,
+                                child: const Icon(RemixIcons.robot_fill,
                                     color: Color(0xFF2094C4), size: 34),
                               ),
                               const SizedBox(width: 14),
@@ -506,7 +427,7 @@ class _WpDashboardTabState extends State<_WpDashboardTab> {
                                 decoration: const BoxDecoration(
                                     gradient: AppColors.buttonGradient,
                                     shape: BoxShape.circle),
-                                child: const Icon(Icons.arrow_forward,
+                                child: const Icon(RemixIcons.arrow_right_fill,
                                     color: Colors.white, size: 18),
                               ),
                             ],
@@ -674,11 +595,11 @@ class _CollectedPackagesBox extends StatelessWidget {
           Row(
             children: [
               Expanded(
-                  child: _statCardStyle(Icons.local_shipping_outlined,
+                  child: _statCardStyle(RemixIcons.truck_fill,
                       "$collectesCount", collectesLabel)),
               const SizedBox(width: 10),
               Expanded(
-                  child: _statCardStyle(Icons.recycling,
+                  child: _statCardStyle(RemixIcons.recycle_fill,
                       "${totalKg.toStringAsFixed(1)} kg", valorisedLabel)),
             ],
           ),
@@ -835,71 +756,3 @@ class _DonutPainter extends CustomPainter {
       oldDelegate.pendingColor != pendingColor;
 }
 
-/// Options de conversion des points — demande explicite : plus qu'UNE
-/// palette à deux couleurs (vert et jaune, les mêmes que le donut "Cette
-/// semaine"), fond BLANC pour chaque carte, seul le logo (icône) porte la
-/// couleur — plus de carte teintée bleue/violette/orange.
-class _ConvertPointsGrid extends StatelessWidget {
-  final bool fr;
-  final VoidCallback onOpenWallet;
-  const _ConvertPointsGrid({required this.fr, required this.onOpenWallet});
-
-  @override
-  Widget build(BuildContext context) {
-    final options = [
-      (Icons.phone_android_rounded, fr ? "Crédit" : "Airtime", AppColors.amber),
-      (Icons.wifi_rounded, fr ? "Data" : "Data", AppColors.greenDeep),
-      (
-        Icons.account_balance_outlined,
-        fr ? "Retrait" : "Withdraw",
-        AppColors.greenDeep
-      ),
-      (Icons.card_giftcard_outlined, fr ? "Envoyer" : "Send", AppColors.amber),
-    ];
-    // Les 4 options côte à côte, sur une seule ligne — chacune reste sa
-    // propre carte (couleur, bordure) au lieu d'être fusionnée dans une
-    // grille 2x2.
-    return Row(
-      children: options
-          .map((o) => Expanded(
-                  child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                child: _convertOptionCard(icon: o.$1, label: o.$2, color: o.$3),
-              )))
-          .toList(),
-    );
-  }
-
-  Widget _convertOptionCard(
-      {required IconData icon, required String label, required Color color}) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(16),
-      onTap: onOpenWallet,
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
-        decoration: BoxDecoration(
-          // Fond de carte adapté au thème (pas de blanc en dur, demande
-          // explicite : visible aussi en mode sombre).
-          color: AppColors.card,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppColors.line, width: 1.2),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            BoxLogo(icon, size: 42, color: color),
-            const SizedBox(height: 6),
-            Text(label,
-                textAlign: TextAlign.center,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w800,
-                    color: AppColors.heading)),
-          ],
-        ),
-      ),
-    );
-  }
-}

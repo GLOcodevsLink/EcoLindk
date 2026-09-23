@@ -10,18 +10,18 @@ import 'register_screen.dart';
 ///
 /// Reproduit fidèlement le prototype fourni : l'illustration (ciel + décor +
 /// scène de collecte) sert de FOND PLEIN à toute la page — pas une vignette
-/// séparée. Le sélecteur de langue, le logo, le titre et la description sont
-/// superposés directement sur ce fond. Seule la zone du bouton "Commencer",
-/// tout en bas, repose sur une carte blanche à coins arrondis.
+/// séparée (demande explicite : "l'image doit toujours être là", après un
+/// détour où elle avait été isolée dans sa propre carte séparée du texte).
+/// Le sélecteur de langue, le logo, le titre et la description sont
+/// superposés directement sur ce fond, poussés vers le haut (demande
+/// explicite : "repousse les textes un peu plus haut pour éviter que ça ne
+/// touche les cheveux de la fille") pour rester dans la zone de ciel, avant
+/// que la photo n'entre dans le vif du décor. Seule la zone du bouton
+/// "Commencer", tout en bas, repose sur une carte blanche à coins arrondis.
 ///
-/// Structure (de bas en haut dans le code, de haut en bas à l'écran) :
-/// - assets/images/landing_hero.png  : LA photo fournie (ciel, nuages,
-///   arbres, immeubles, scène de collecte) sert de fond plein en continu,
-///   en BoxFit.cover — ce n'est jamais un ciel reconstruit séparément.
-/// - Contenu superposé : IMPACT + sélecteur de langue, logo, titre bicolore,
-///   description — tous alignés à gauche (sauf le sélecteur, à droite),
-///   avec un léger voile blanc dégradé derrière pour rester lisibles.
-/// - Carte blanche uniquement pour le bouton "Commencer", en bas de l'écran.
+/// Pas de bouton "Demandez à notre assistant IA" ici (demande explicite :
+/// il tombait sur le visage de la fille de la photo) — l'assistant reste
+/// accessible depuis les dashboards une fois connecté.
 ///
 /// "Commencer" mène à RegisterScreen, qui commence par demander le rôle
 /// (Fournisseur de déchets / Collecteur) sur cette même page — c'est depuis
@@ -47,10 +47,8 @@ class LandingScreen extends StatelessWidget {
                     child: Stack(
                       fit: StackFit.expand,
                       children: [
-                        // ---- Fond plein : LA photo, désormais étendue avec un
-                        // vrai ciel + nuages en haut (pas de zoom artificiel,
-                        // pas de voile lourd nécessaire — le fondu vient de
-                        // l'image elle-même, comme sur le premier fichier).
+                        // ---- Fond plein : LA photo, en continu, jamais isolée
+                        // dans une vignette séparée (demande explicite).
                         Positioned.fill(
                           child: Image.asset(
                             'assets/images/landing_hero.png',
@@ -65,7 +63,7 @@ class LandingScreen extends StatelessWidget {
                           top: 0,
                           left: 0,
                           right: 0,
-                          height: 480,
+                          height: 420,
                           child: Container(
                             decoration: BoxDecoration(
                               gradient: LinearGradient(
@@ -81,7 +79,10 @@ class LandingScreen extends StatelessWidget {
                             ),
                           ),
                         ),
-                        // ---- Contenu superposé (logo, titre, description) ----
+                        // ---- Contenu superposé (logo, titre, description) —
+                        // resserré et poussé vers le haut (demande explicite)
+                        // pour rester dans le ciel, sans toucher les cheveux
+                        // de la fille plus bas dans la photo.
                         SafeArea(
                           bottom: false,
                           child: Padding(
@@ -89,107 +90,65 @@ class LandingScreen extends StatelessWidget {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                const SizedBox(height: 4),
                                 Align(
                                   alignment: Alignment.topRight,
                                   child: LanguageSwitcher(
                                       iconColor: AppColors.heading),
                                 ),
-                                const SizedBox(height: 2),
                                 Center(
                                   child: Image.asset(
                                     'assets/images/logo.png',
-                                    width: 190,
+                                    width: 160,
                                     fit: BoxFit.contain,
                                     errorBuilder:
                                         (context, error, stackTrace) =>
                                             Container(
-                                      width: 68,
-                                      height: 68,
+                                      width: 58,
+                                      height: 58,
                                       decoration: const BoxDecoration(
                                         gradient: AppColors.logoGradient,
                                         shape: BoxShape.circle,
                                       ),
                                       child: const Icon(Icons.eco,
-                                          color: Colors.white, size: 34),
+                                          color: Colors.white, size: 30),
                                     ),
                                   ),
                                 ),
-                                const SizedBox(height: 8),
+                                const SizedBox(height: 4),
                                 Text.rich(
                                   TextSpan(
                                     children: [
                                       TextSpan(
                                         text: s.landingTaglineLine1,
                                         style: TextStyle(
-                                          fontSize: 23,
+                                          fontSize: 21,
                                           fontWeight: FontWeight.w800,
                                           color: AppColors.navy,
-                                          height: 1.3,
+                                          height: 1.25,
                                         ),
                                       ),
                                       const TextSpan(text: "\n"),
                                       TextSpan(
                                         text: s.landingTaglineLine2,
                                         style: TextStyle(
-                                          fontSize: 23,
+                                          fontSize: 21,
                                           fontWeight: FontWeight.w800,
                                           color: AppColors.greenMid,
-                                          height: 1.3,
+                                          height: 1.25,
                                         ),
                                       ),
                                     ],
                                   ),
                                   textAlign: TextAlign.left,
                                 ),
-                                const SizedBox(height: 10),
+                                const SizedBox(height: 8),
                                 Text(
                                   s.landingDescription,
                                   textAlign: TextAlign.left,
                                   style: TextStyle(
-                                      fontSize: 12.5,
+                                      fontSize: 12,
                                       color: AppColors.navy,
-                                      height: 1.5),
-                                ),
-                                const SizedBox(height: 12),
-                                // Aperçu de l'Assistant IA — pas encore
-                                // fonctionnel (perspective, voir le bandeau
-                                // équivalent sur le dashboard Fournisseur).
-                                Builder(
-                                  builder: (context) => InkWell(
-                                    borderRadius: BorderRadius.circular(999),
-                                    onTap: () => ScaffoldMessenger.of(context)
-                                        .showSnackBar(SnackBar(
-                                            content: Text(lang == AppLanguage.fr
-                                                ? "Assistant IA — bientôt disponible."
-                                                : "AI Assistant — coming soon."))),
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 12, vertical: 7),
-                                      decoration: BoxDecoration(
-                                        color: Colors.white.withOpacity(0.75),
-                                        borderRadius: BorderRadius.circular(999),
-                                        border: Border.all(
-                                            color: AppColors.greenMid.withOpacity(0.35)),
-                                      ),
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          const Icon(Icons.smart_toy_outlined,
-                                              size: 14, color: AppColors.greenDeep),
-                                          const SizedBox(width: 6),
-                                          Text(
-                                              lang == AppLanguage.fr
-                                                  ? "Demandez à notre assistant IA"
-                                                  : "Ask our AI assistant",
-                                              style: const TextStyle(
-                                                  fontSize: 11,
-                                                  fontWeight: FontWeight.w700,
-                                                  color: AppColors.greenDeep)),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
+                                      height: 1.4),
                                 ),
                               ],
                             ),
@@ -206,7 +165,11 @@ class LandingScreen extends StatelessWidget {
                   Container(
                     width: double.infinity,
                     decoration: BoxDecoration(
-                      color: AppColors.background,
+                      // Blanc doux (comme le reste de l'app, voir
+                      // AppColors.card) — redevenu clair : la version verte
+                      // plus soutenue tranchait trop nettement sur la photo
+                      // juste au-dessus ("une ligne qui barre l'image").
+                      color: AppColors.card,
                       borderRadius:
                           const BorderRadius.vertical(top: Radius.circular(28)),
                     ),
@@ -234,6 +197,7 @@ class LandingScreen extends StatelessWidget {
                           const SizedBox(height: 14),
                           GradientPillButton(
                             label: s.onboardingStart,
+                            gradient: AppColors.landingStartButtonGradient,
                             onPressed: () {
                               Navigator.of(context).push(
                                 MaterialPageRoute(

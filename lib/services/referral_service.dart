@@ -150,9 +150,16 @@ class ReferralService {
         final txSnap = await tx.get(txRef);
         if (txSnap.exists) return false; // déjà réclamé pour ce filleul
 
+        // Firestore exige toutes les lectures d'une transaction AVANT la
+        // première écriture — sinon elle échoue sur un vrai appareil.
         final walletSnap = await tx.get(walletRef);
+        final referrerSnap = await tx.get(referrerRef);
         final balance = (walletSnap.data()?['pointsBalance'] as num?)?.toInt() ?? 0;
-        tx.set(walletRef, {'pointsBalance': balance + RewardsConfig.referralPoints},
+        final lifetime = (walletSnap.data()?['lifetimeEarned'] as num?)?.toInt() ?? balance;
+        tx.set(walletRef, {
+              'pointsBalance': balance + RewardsConfig.referralPoints,
+              'lifetimeEarned': lifetime + RewardsConfig.referralPoints,
+            },
             SetOptions(merge: true));
         tx.set(txRef, {
           'type': PointsTxType.earnedReferral.name,
@@ -162,7 +169,6 @@ class ReferralService {
           'createdAt': FieldValue.serverTimestamp(),
         });
 
-        final referrerSnap = await tx.get(referrerRef);
         final count = (referrerSnap.data()?['referralsCount'] as num?)?.toInt() ?? 0;
         final earned = (referrerSnap.data()?['pointsEarned'] as num?)?.toInt() ?? 0;
         tx.set(
@@ -176,7 +182,7 @@ class ReferralService {
       });
 
       if (claimed) {
-        await NotificationService().notify(
+        await NotificationService(firestore: _firestore).notify(
           uid: referrerUid,
           type: NotificationType.referralCompleted,
           title: 'Parrainage réussi 🎉',

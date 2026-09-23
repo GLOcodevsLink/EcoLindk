@@ -141,7 +141,7 @@ class _RoleSelectionScreenState extends State<RoleSelectionScreen> {
               width: 44,
               height: 44,
               decoration: BoxDecoration(
-                gradient: AppColors.buttonGradient,
+                gradient: AppColors.authButtonGradient,
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Icon(role.icon, color: Colors.white, size: 22),

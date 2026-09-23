@@ -184,14 +184,6 @@ class _BinPainter extends CustomPainter {
       ..quadraticBezierTo(w * 0.24, h, w * 0.22, h * 0.94)
       ..close();
 
-    // Ombre portée douce sous l'ensemble — donne un effet "autocollant qui
-    // flotte" plutôt qu'un aplat posé bord à bord sur le fond.
-    final silhouette = Path()
-      ..addRRect(handle)
-      ..addRRect(lid)
-      ..addPath(body, Offset.zero);
-    canvas.drawShadow(silhouette, Colors.black.withOpacity(0.35), w * 0.09, false);
-
     // Dégradé clair (haut) -> plus soutenu (bas) plutôt qu'un aplat plat —
     // donne un peu de volume, comme un plastique moulé.
     final fillPaint = Paint()

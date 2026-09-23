@@ -127,7 +127,7 @@ class WalletService {
     });
 
     if (!credited) return;
-    await NotificationService().notify(
+    await NotificationService(firestore: _firestore).notify(
       uid: uid,
       type: NotificationType.pointsCredited,
       title: 'Points crédités 🎉',

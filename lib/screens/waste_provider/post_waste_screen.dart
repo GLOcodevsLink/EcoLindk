@@ -1,5 +1,8 @@
 import 'dart:io';
+import 'package:file_selector/file_selector.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../core/l10n/app_language.dart';
 import '../../core/theme.dart';
@@ -7,9 +10,12 @@ import '../../models/collection_request.dart';
 import '../../services/ai_classifier.dart';
 import '../../services/auth_service.dart';
 import '../../services/collection_service.dart';
+import '../../services/stockimg_client.dart';
 import '../../services/geo_helper.dart';
+import '../../services/geocoding_service.dart';
 import '../../widgets/decorative_leaves.dart';
 import '../../widgets/gradient_pill_button.dart';
+import '../../widgets/osm_map_preview.dart';
 import '../../widgets/wp_common.dart';
 import 'request_status_screen.dart';
 
@@ -33,14 +39,22 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
 
   final _authService = AuthService();
   final _collectionService = CollectionService();
+  final _geocodingService = GeocodingService();
   final _descriptionCtrl = TextEditingController();
   final _addressCtrl = TextEditingController();
+  final _quantityCtrl = TextEditingController();
 
   File? _imageFile;
   String? _imageError;
 
   WasteCategory? _category;
-  String? _quantityRange;
+
+  /// Aucun clavier physique/tactile ni webcam de "vraie" caméra n'existe sur
+  /// Linux/Windows via `image_picker` (pas d'implémentation fédérée pour ces
+  /// plateformes) — le bouton "Caméra" y serait un bouton mort qui échoue en
+  /// silence. Masqué sur desktop plutôt que simulé.
+  bool get _isDesktop =>
+      !kIsWeb && (Platform.isLinux || Platform.isWindows || Platform.isMacOS);
 
   bool _useAi = false;
   bool _aiRunning = false;
@@ -51,24 +65,62 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
   ResolvedLocation? _location;
   bool _locating = false;
   String? _locationError;
+  bool _geocoding = false;
 
   bool _submitting = false;
   String? _submitError;
-
-  static const _quantityOptions = ['< 1 kg', '1 - 5 kg', '5 - 10 kg', '10+ kg'];
 
   @override
   void dispose() {
     _descriptionCtrl.dispose();
     _addressCtrl.dispose();
+    _quantityCtrl.dispose();
     super.dispose();
   }
 
   bool _fr(BuildContext context) => appLanguage.value == AppLanguage.fr;
 
+  /// Quantité tapée par l'utilisateur (kg) — `null` si vide ou non numérique
+  /// (voir [_canGoNext]/[_submit], qui bloquent toujours avant Firestore si
+  /// c'est le cas : demande explicite "le système vérifie toujours les
+  /// entrées de l'utilisateur avant de poursuivre").
+  double? get _parsedQuantityKg =>
+      double.tryParse(_quantityCtrl.text.trim().replaceAll(',', '.'));
+
+  String _formatQtyNumber(double v) =>
+      v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(1);
+  String _formatQtyKg(double v) => '${_formatQtyNumber(v)} kg';
+
   Future<void> _pickImage(ImageSource source) async {
     try {
-      final picked = await ImagePicker().pickImage(source: source, imageQuality: 85);
+      final picked = await ImagePicker().pickImage(
+          source: source, imageQuality: 85, maxWidth: 2048, maxHeight: 2048);
+      if (picked == null) return; // annulé par l'utilisateur, pas une erreur
+      setState(() {
+        _imageFile = File(picked.path);
+        _imageError = null;
+        _aiResult = null;
+      });
+    } catch (_) {
+      setState(() => _imageError =
+          _fr(context) ? "Image invalide. Réessayez." : "Invalid image. Please try again.");
+    }
+  }
+
+  /// Ouvre le vrai sélecteur de fichiers du système (demande explicite : "la
+  /// galerie doit ouvrir l'espace fichier de la machine") — `image_picker`
+  /// n'a pas d'implémentation Linux/Windows (bouton mort sur desktop) ;
+  /// `file_selector` est le plugin officiel Flutter avec un vrai panneau
+  /// natif sur TOUTES les plateformes (Explorateur de fichiers/Finder/
+  /// sélecteur Android inclus), donc utilisé ici pour "Galerie" partout.
+  Future<void> _pickImageFromFiles() async {
+    try {
+      const typeGroup = XTypeGroup(
+        label: 'images',
+        // Formats acceptés par StockImg (pas de HEIC).
+        extensions: ['jpg', 'jpeg', 'png', 'webp'],
+      );
+      final picked = await openFile(acceptedTypeGroups: [typeGroup]);
       if (picked == null) return; // annulé par l'utilisateur, pas une erreur
       setState(() {
         _imageFile = File(picked.path);
@@ -90,9 +142,17 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
         }
         return true;
       case 1:
-        if (_category == null || _quantityRange == null || _descriptionCtrl.text.trim().isEmpty) {
+        if (_category == null || _descriptionCtrl.text.trim().isEmpty) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
               content: Text(fr ? "Complétez tous les champs." : "Fill in all the fields.")));
+          return false;
+        }
+        final qty = _parsedQuantityKg;
+        if (qty == null || qty <= 0) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text(fr
+                  ? "Entrez une quantité valide, en kilogrammes."
+                  : "Enter a valid quantity, in kilograms.")));
           return false;
         }
         return true;
@@ -177,16 +237,50 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
     });
   }
 
-  void _useTypedAddress() {
+  /// Géocode l'adresse tapée via Nominatim (voir GeocodingService) — UNE
+  /// SEULE fois, au tap sur "Localiser cette adresse", jamais à chaque
+  /// frappe. Le résultat reste marqué [ResolvedLocation.isApproximate] :
+  /// une adresse géocodée est moins précise qu'un point GPS direct.
+  Future<void> _useTypedAddress() async {
+    final fr = _fr(context);
     final address = _addressCtrl.text.trim();
     if (address.isEmpty) return;
-    setState(() => _location = GeoHelper.approximateFromAddress(address));
+    setState(() {
+      _geocoding = true;
+      _locationError = null;
+    });
+    try {
+      final result = await _geocodingService.geocode(address);
+      if (!mounted) return;
+      setState(() {
+        _location = ResolvedLocation(
+            latitude: result.latitude, longitude: result.longitude, isApproximate: true);
+        _geocoding = false;
+      });
+    } on GeocodingException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _geocoding = false;
+        _locationError = switch (e.code) {
+          'not-found' => fr
+              ? "Adresse introuvable. Précisez-la et réessayez."
+              : "Address not found. Refine it and try again.",
+          'timeout' => fr ? "La recherche a pris trop de temps." : "The search took too long.",
+          'network' => fr ? "Problème de connexion réseau." : "Network connection problem.",
+          _ => fr ? "Géocodage impossible. Réessayez." : "Couldn't locate this address. Try again.",
+        };
+      });
+    }
   }
 
   Future<void> _submit() async {
     final fr = _fr(context);
     final uid = _authService.currentUser?.uid;
-    if (uid == null || _category == null || _quantityRange == null || _location == null) return;
+    final qty = _parsedQuantityKg;
+    // Revérifié ici (en plus de [_canGoNext] à chaque étape) juste avant
+    // d'écrire quoi que ce soit sur Firestore — jamais confiance uniquement
+    // dans un contrôle déjà passé plus tôt dans le flux.
+    if (uid == null || _category == null || qty == null || qty <= 0 || _location == null) return;
 
     setState(() {
       _submitting = true;
@@ -207,7 +301,7 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
         imageUrl: imageUrl,
         description: _descriptionCtrl.text.trim(),
         category: _category!,
-        quantityRange: _quantityRange!,
+        quantityRange: _formatQtyKg(qty),
         aiRequested: _useAi,
         aiSuggestedCategory: _aiResult?.category,
         aiConfidence: _aiResult?.confidence,
@@ -221,13 +315,29 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => RequestStatusScreen(requestId: request.id)),
       );
-    } catch (_) {
+    } catch (e, st) {
+      // Ecrit la VRAIE cause dans les logs (console `flutter run`) — le
+      // message affiché à l'utilisateur reste volontairement générique,
+      // mais un échec silencieux sans aucune trace serait indiscernable
+      // d'une simulation qui ne fait rien.
+      debugPrint('PostWasteScreen._submit failed: $e\n$st');
       if (!mounted) return;
       setState(() {
         _submitting = false;
-        _submitError = fr
-            ? "Envoi impossible. Vérifiez votre connexion et réessayez."
-            : "Couldn't submit. Check your connection and try again.";
+        _submitError = switch (e) {
+          StockImgException(code: 'rejected') => fr
+              ? "Photo refusée (5 Mo max, JPEG/PNG/WEBP) ou espace de stockage plein."
+              : "Photo rejected (5 MB max, JPEG/PNG/WEBP) or storage full.",
+          StockImgException(code: 'rate-limited') => fr
+              ? "Trop d'envois en peu de temps. Réessayez dans une minute."
+              : "Too many uploads. Try again in a minute.",
+          StockImgException(code: 'not-configured' || 'unauthorized') => fr
+              ? "Hébergement des photos non configuré (clé StockImg)."
+              : "Photo hosting not configured (StockImg key).",
+          _ => fr
+              ? "Envoi impossible. Vérifiez votre connexion et réessayez."
+              : "Couldn't submit. Check your connection and try again.",
+        };
       });
     }
   }
@@ -370,17 +480,23 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
         const SizedBox(height: 14),
         Row(
           children: [
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: () => _pickImage(ImageSource.camera),
-                icon: const Icon(Icons.photo_camera_outlined, size: 18),
-                label: Text(fr ? "Caméra" : "Camera"),
+            // Pas de webcam via image_picker sur desktop (Linux/Windows/
+            // macOS n'ont pas d'implémentation caméra dans le plugin) — un
+            // bouton "Caméra" y échouerait en silence, donc masqué plutôt
+            // que laissé simulé (demande explicite : plus de simulations).
+            if (!_isDesktop) ...[
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => _pickImage(ImageSource.camera),
+                  icon: const Icon(Icons.photo_camera_outlined, size: 18),
+                  label: Text(fr ? "Caméra" : "Camera"),
+                ),
               ),
-            ),
-            const SizedBox(width: 10),
+              const SizedBox(width: 10),
+            ],
             Expanded(
               child: OutlinedButton.icon(
-                onPressed: () => _pickImage(ImageSource.gallery),
+                onPressed: _pickImageFromFiles,
                 icon: const Icon(Icons.photo_library_outlined, size: 18),
                 label: Text(fr ? "Galerie" : "Gallery"),
               ),
@@ -400,56 +516,109 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(fr ? "Description" : "Description",
-            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.mainText)),
-        const SizedBox(height: 8),
-        TextField(
-          controller: _descriptionCtrl,
-          maxLines: 3,
-          decoration: InputDecoration(
-            hintText: fr ? "Ex. Bouteilles plastique et cartons d'emballage" : "E.g. Plastic bottles and packaging boxes",
+        _sectionCard(
+          icon: Icons.notes_rounded,
+          title: fr ? "Description" : "Description",
+          child: TextField(
+            controller: _descriptionCtrl,
+            maxLines: 3,
+            textCapitalization: TextCapitalization.sentences,
+            decoration: InputDecoration(
+              hintText: fr
+                  ? "Ex. Bouteilles plastique et cartons d'emballage"
+                  : "E.g. Plastic bottles and packaging boxes",
+            ),
           ),
         ),
-        const SizedBox(height: 18),
-        Text(fr ? "Catégorie" : "Category",
-            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.mainText)),
-        const SizedBox(height: 8),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: WasteCategory.values.map((c) {
-            final active = _category == c;
-            return ChoiceChip(
-              avatar: Icon(c.icon, size: 16, color: active ? Colors.white : c.color),
-              label: Text(c.label(fr)),
-              selected: active,
-              labelStyle: TextStyle(color: active ? Colors.white : c.color, fontWeight: FontWeight.w700),
-              selectedColor: c.color,
-              backgroundColor: c.color.withOpacity(0.08),
-              side: BorderSide(color: c.color.withOpacity(active ? 0 : 0.35)),
-              onSelected: (_) => setState(() => _category = c),
-            );
-          }).toList(),
+        const SizedBox(height: 14),
+        _sectionCard(
+          icon: Icons.category_outlined,
+          title: fr ? "Catégorie" : "Category",
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: WasteCategory.values.map((c) {
+              final active = _category == c;
+              return ChoiceChip(
+                avatar: Icon(c.icon, size: 16, color: active ? Colors.white : c.color),
+                label: Text(c.label(fr)),
+                selected: active,
+                labelStyle: TextStyle(color: active ? Colors.white : c.color, fontWeight: FontWeight.w700),
+                selectedColor: c.color,
+                backgroundColor: c.color.withOpacity(0.08),
+                side: BorderSide(color: c.color.withOpacity(active ? 0 : 0.35)),
+                onSelected: (_) => setState(() => _category = c),
+              );
+            }).toList(),
+          ),
         ),
-        const SizedBox(height: 18),
-        Text(fr ? "Quantité approximative" : "Approximate quantity",
-            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.mainText)),
-        const SizedBox(height: 8),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: _quantityOptions.map((q) {
-            final active = _quantityRange == q;
-            return ChoiceChip(
-              label: Text(q),
-              selected: active,
-              labelStyle: TextStyle(color: active ? Colors.white : AppColors.heading, fontWeight: FontWeight.w700),
-              selectedColor: AppColors.greenMid,
-              onSelected: (_) => setState(() => _quantityRange = q),
-            );
-          }).toList(),
+        const SizedBox(height: 14),
+        _sectionCard(
+          icon: Icons.scale_outlined,
+          title: fr ? "Quantité" : "Quantity",
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Saisie libre (demande explicite : "ça ne doit pas proposer
+              // à l'utilisateur, ça doit offrir un espace et laisser
+              // l'utilisateur entrer une approximation ou une quantité
+              // exacte") — plus de paliers fixes à choisir, un nombre de kg
+              // tapé directement, qu'il soit approximatif ou précis au gramme.
+              Text(
+                fr
+                    ? "Entrez une estimation ou le poids exact, en kilogrammes."
+                    : "Enter an estimate or the exact weight, in kilograms.",
+                style: TextStyle(fontSize: 11, color: AppColors.textGray),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _quantityCtrl,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]'))],
+                decoration: InputDecoration(
+                  hintText: fr ? "Ex. 3.5" : "E.g. 3.5",
+                  prefixIcon: const Icon(Icons.scale_outlined, size: 19),
+                  suffixText: 'kg',
+                ),
+              ),
+            ],
+          ),
         ),
       ],
+    );
+  }
+
+  /// Carte partagée pour chaque section du formulaire (demande explicite :
+  /// "rends le plus beau") — icône + titre + contenu, même traitement
+  /// visuel que les cartes du reste de l'app plutôt que du texte brut posé
+  /// sur le fond.
+  Widget _sectionCard({required IconData icon, required String title, required Widget child}) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppColors.line, width: 1.2),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 10, offset: const Offset(0, 4)),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 16, color: AppColors.greenDeep),
+              const SizedBox(width: 6),
+              Text(title,
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: AppColors.mainText)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          child,
+        ],
+      ),
     );
   }
 
@@ -527,8 +696,10 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
   Widget _aiResultCard(bool fr) {
     final result = _aiResult!;
     final matches = _category == result.category;
-    final quantityMatches =
-        result.quantityRange == null || result.quantityRange == _quantityRange;
+    final aiWeight = result.estimatedWeightKg;
+    final currentQty = _parsedQuantityKg;
+    final quantityMatches = aiWeight == null ||
+        (currentQty != null && (currentQty - aiWeight).abs() < 0.05);
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -560,12 +731,12 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
                 : "Confidence: ${(result.confidence * 100).toStringAsFixed(0)}%",
             style: TextStyle(fontSize: 11.5, color: AppColors.textGray),
           ),
-          if (result.quantityRange != null) ...[
+          if (aiWeight != null) ...[
             const SizedBox(height: 4),
             Text(
               fr
-                  ? "Quantité estimée : ${result.quantityRange}"
-                  : "Estimated quantity: ${result.quantityRange}",
+                  ? "Poids estimé : ${_formatQtyKg(aiWeight)}"
+                  : "Estimated weight: ${_formatQtyKg(aiWeight)}",
               style: TextStyle(fontSize: 11.5, color: AppColors.textGray),
             ),
           ],
@@ -576,10 +747,11 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
               child: SizedBox(
                 width: double.infinity,
                 child: OutlinedButton(
-                  onPressed: () => setState(() => _quantityRange = result.quantityRange),
+                  onPressed: () =>
+                      setState(() => _quantityCtrl.text = _formatQtyNumber(aiWeight!)),
                   child: Text(fr
-                      ? "Utiliser cette quantité (${result.quantityRange})"
-                      : "Use this quantity (${result.quantityRange})"),
+                      ? "Utiliser ce poids (${_formatQtyKg(aiWeight)})"
+                      : "Use this weight (${_formatQtyKg(aiWeight)})"),
                 ),
               ),
             ),
@@ -655,7 +827,14 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
             ),
           ),
           const SizedBox(height: 10),
-          OutlinedButton(onPressed: _useTypedAddress, child: Text(fr ? "Localiser cette adresse" : "Locate this address")),
+          _geocoding
+              ? const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 12),
+                  child: Center(child: CircularProgressIndicator(color: AppColors.greenMid, strokeWidth: 2.4)),
+                )
+              : OutlinedButton(
+                  onPressed: _useTypedAddress,
+                  child: Text(fr ? "Localiser cette adresse" : "Locate this address")),
         ],
         if (_locationError != null) ...[
           const SizedBox(height: 12),
@@ -674,7 +853,8 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
             style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.mainText)),
         const SizedBox(height: 8),
         _summaryRow(fr ? "Catégorie" : "Category", _category?.label(fr) ?? '—'),
-        _summaryRow(fr ? "Quantité" : "Quantity", _quantityRange ?? '—'),
+        _summaryRow(fr ? "Quantité" : "Quantity",
+            _parsedQuantityKg == null ? '—' : _formatQtyKg(_parsedQuantityKg!)),
         _summaryRow(fr ? "Analyse IA" : "AI analysis", _useAi ? (fr ? "Activée" : "Enabled") : (fr ? "Désactivée" : "Disabled")),
       ],
     );

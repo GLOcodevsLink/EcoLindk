@@ -205,8 +205,10 @@ class AuthService {
     });
   }
 
-  /// Finalise un compte Collecteur : statut "pending" en attente de
-  /// validation admin.
+  /// Finalise un compte Collecteur : vérifié immédiatement, comme un compte
+  /// Ménage (demande explicite : "il ne devrait pas avoir ça [la validation
+  /// admin], il crée juste son compte et puis c'est tout — lorsqu'il crée il
+  /// peut tout faire ce qui le concerne").
   Future<void> completeCollectorRegistration(
     String uid, {
     required String collectionZone,
@@ -215,7 +217,7 @@ class AuthService {
   }) {
     return _users.doc(uid).update({
       'role': UserRole.collector.name,
-      'verificationStatus': VerificationStatus.pending.value,
+      'verificationStatus': VerificationStatus.verified.value,
       'collectionZone': collectionZone.trim(),
       'workStatus': workStatus.name,
       'companyName': (companyName == null || companyName.trim().isEmpty)

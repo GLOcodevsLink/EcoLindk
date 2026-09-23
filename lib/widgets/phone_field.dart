@@ -1,39 +1,15 @@
+import 'package:country_picker/country_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:remixicon/remixicon.dart';
 import '../core/theme.dart';
 
-/// Représente un pays sélectionnable pour l'indicatif téléphonique.
-class CountryDialCode {
-  final String name;
-  final String flag;
-  final String dialCode; // ex: "+237"
-  final int nationalLength; // nombre de chiffres attendu après l'indicatif
-
-  const CountryDialCode({
-    required this.name,
-    required this.flag,
-    required this.dialCode,
-    required this.nationalLength,
-  });
-}
-
-/// Liste de pays proposée au choix (Cameroun en premier / par défaut).
-/// Ajoute d'autres pays ici si besoin (Tchad, Gabon, RCA, Congo, Nigeria...).
-const List<CountryDialCode> kSupportedCountries = [
-  CountryDialCode(
-      name: "Cameroun", flag: "🇨🇲", dialCode: "+237", nationalLength: 9),
-  CountryDialCode(
-      name: "Tchad", flag: "🇹🇩", dialCode: "+235", nationalLength: 8),
-  CountryDialCode(
-      name: "Gabon", flag: "🇬🇦", dialCode: "+241", nationalLength: 8),
-  CountryDialCode(
-      name: "Congo", flag: "🇨🇬", dialCode: "+242", nationalLength: 9),
-  CountryDialCode(
-      name: "Nigeria", flag: "🇳🇬", dialCode: "+234", nationalLength: 10),
-];
-
-/// Champ téléphone avec sélecteur de pays (indicatif + validation de longueur).
-/// Par défaut : Cameroun +237, numéro à 9 chiffres.
+/// Champ téléphone avec sélecteur de pays — le sélecteur (icône drapeau +
+/// indicatif) ouvre désormais la liste COMPLÈTE des pays du monde (package
+/// `country_picker`, avec recherche), plus seulement une poignée de pays
+/// d'Afrique centrale codés en dur (demande explicite : proposer l'indicatif
+/// de tous les pays, pas juste quelques-uns). Le Cameroun reste le pays par
+/// défaut et remonte en tête de liste ("favori").
 class PhoneField extends StatefulWidget {
   final TextEditingController controller;
 
@@ -43,7 +19,7 @@ class PhoneField extends StatefulWidget {
 
   /// Numéro complet (E.164) à pré-remplir, ex: numéro retenu d'une connexion
   /// précédente (voir SettingsService.loadLastPhone). Ignoré si son
-  /// indicatif ne correspond à aucun pays de [kSupportedCountries].
+  /// indicatif ne correspond à aucun pays connu.
   final String? initialValue;
 
   const PhoneField({
@@ -58,18 +34,28 @@ class PhoneField extends StatefulWidget {
 }
 
 class _PhoneFieldState extends State<PhoneField> {
-  late CountryDialCode _selected;
+  static const _defaultCountryCode = 'CM'; // Cameroun
+
+  late Country _selected;
 
   @override
   void initState() {
     super.initState();
-    _selected = kSupportedCountries.first; // Cameroun par défaut
+    _selected = CountryService().findByCode(_defaultCountryCode) ??
+        CountryService().getAll().first;
+
     final initial = widget.initialValue;
-    if (initial != null && initial.isNotEmpty) {
-      for (final country in kSupportedCountries) {
-        if (initial.startsWith(country.dialCode)) {
-          _selected = country;
-          widget.controller.text = initial.substring(country.dialCode.length);
+    if (initial != null && initial.startsWith('+')) {
+      final digits = initial.substring(1);
+      // Les indicatifs font 1 à 3 chiffres (E.164) — on cherche la
+      // correspondance la plus longue pour éviter qu'un indicatif court
+      // (ex. "1") ne masque un indicatif plus précis (ex. "237").
+      for (var len = 3; len >= 1; len--) {
+        if (digits.length < len) continue;
+        final match = CountryService().findByPhoneCode(digits.substring(0, len));
+        if (match != null) {
+          _selected = match;
+          widget.controller.text = digits.substring(len);
           break;
         }
       }
@@ -77,41 +63,34 @@ class _PhoneFieldState extends State<PhoneField> {
   }
 
   void _notifyChanged() {
-    widget.onChanged?.call('${_selected.dialCode}${widget.controller.text}');
+    widget.onChanged?.call('+${_selected.phoneCode}${widget.controller.text}');
   }
 
   void _openCountryPicker() {
-    showModalBottomSheet(
+    showCountryPicker(
       context: context,
-      backgroundColor: AppColors.card,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (ctx) {
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const SizedBox(height: 12),
-              const Text("Choisir un pays",
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-              const SizedBox(height: 8),
-              ...kSupportedCountries.map((c) => ListTile(
-                    leading: Text(c.flag, style: TextStyle(fontSize: 20)),
-                    title: Text(c.name),
-                    trailing: Text(c.dialCode,
-                        style: TextStyle(fontWeight: FontWeight.bold)),
-                    onTap: () {
-                      setState(() => _selected = c);
-                      widget.controller.clear();
-                      _notifyChanged();
-                      Navigator.pop(ctx);
-                    },
-                  )),
-              const SizedBox(height: 12),
-            ],
+      showPhoneCode: true,
+      favorite: const [_defaultCountryCode],
+      countryListTheme: CountryListThemeData(
+        backgroundColor: AppColors.card,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        textStyle: TextStyle(color: AppColors.mainText, fontSize: 15),
+        searchTextStyle: TextStyle(color: AppColors.mainText),
+        inputDecoration: InputDecoration(
+          hintText: "Rechercher un pays",
+          prefixIcon: const Icon(RemixIcons.search_line, size: 18),
+          filled: true,
+          fillColor: AppColors.inputFill,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide.none,
           ),
-        );
+        ),
+      ),
+      onSelect: (country) {
+        setState(() => _selected = country);
+        widget.controller.clear();
+        _notifyChanged();
       },
     );
   }
@@ -129,7 +108,8 @@ class _PhoneFieldState extends State<PhoneField> {
         const SizedBox(height: 6),
         Row(
           children: [
-            // Sélecteur d'indicatif pays
+            // Sélecteur d'indicatif pays — liste complète (voir doc de
+            // la classe), pas limitée à quelques pays.
             InkWell(
               borderRadius: BorderRadius.circular(12),
               onTap: _openCountryPicker,
@@ -143,36 +123,37 @@ class _PhoneFieldState extends State<PhoneField> {
                 ),
                 child: Row(
                   children: [
-                    Text(_selected.flag, style: TextStyle(fontSize: 17)),
+                    Text(_selected.flagEmoji, style: TextStyle(fontSize: 17)),
                     const SizedBox(width: 6),
-                    Text(_selected.dialCode,
+                    Text("+${_selected.phoneCode}",
                         style: TextStyle(fontWeight: FontWeight.bold)),
-                    const Icon(Icons.keyboard_arrow_down, size: 18),
+                    const Icon(RemixIcons.arrow_down_s_fill, size: 15),
                   ],
                 ),
               ),
             ),
             const SizedBox(width: 10),
-            // Champ numéro national (validé selon le pays choisi)
+            // Champ numéro national. Les indicatifs internationaux couvrent
+            // des numéros nationaux de 4 à 14 chiffres selon le pays (norme
+            // E.164) : on ne connaît plus une longueur exacte par pays (la
+            // liste n'est plus figée à quelques pays), donc la validation
+            // reste dans cette plage plutôt qu'une longueur unique imposée.
             Expanded(
               child: TextFormField(
                 controller: widget.controller,
                 keyboardType: TextInputType.phone,
                 inputFormatters: [
                   FilteringTextInputFormatter.digitsOnly,
-                  LengthLimitingTextInputFormatter(_selected.nationalLength),
+                  LengthLimitingTextInputFormatter(14),
                 ],
                 onChanged: (_) => _notifyChanged(),
-                decoration: InputDecoration(
-                  hintText: "6XX XXX XXX".substring(
-                      0, (_selected.nationalLength + 2).clamp(0, 11)),
-                ),
+                decoration: const InputDecoration(hintText: "6XX XXX XXX"),
                 validator: (value) {
                   if (value == null || value.isEmpty) {
                     return "Numéro requis";
                   }
-                  if (value.length != _selected.nationalLength) {
-                    return "Le numéro ${_selected.name} doit contenir ${_selected.nationalLength} chiffres";
+                  if (value.length < 4 || value.length > 14) {
+                    return "Numéro de téléphone invalide";
                   }
                   return null;
                 },

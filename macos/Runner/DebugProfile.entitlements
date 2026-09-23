@@ -8,5 +8,10 @@
 	<true/>
 	<key>com.apple.security.network.server</key>
 	<true/>
+	<!-- Requis par file_selector (PostWasteScreen, photo du déchet) : sans
+	     ça, le panneau natif "Ouvrir un fichier" s'affiche mais l'app n'a pas
+	     le droit de lire le fichier choisi une fois le panneau fermé. -->
+	<key>com.apple.security.files.user-selected.read-only</key>
+	<true/>
 </dict>
 </plist>

@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import '../core/theme.dart';
 import '../models/user_role.dart';
 import '../services/auth_service.dart';
+import '../services/collection_service.dart';
+import '../services/geocoding_service.dart';
 import '../widgets/gradient_pill_button.dart';
 import '../widgets/decorative_leaves.dart';
 import '../core/l10n/app_language.dart';
@@ -9,8 +11,13 @@ import '../core/l10n/strings.dart';
 import 'home_screen.dart';
 
 /// Dernière étape pour un Collecteur : zone de collecte + statut
-/// (indépendant ou en entreprise). Finalise le compte avec le statut
-/// "pending" (en attente de validation admin) puis ouvre le dashboard.
+/// (indépendant ou en entreprise). Finalise le compte (vérifié
+/// immédiatement, voir AuthService.completeCollectorRegistration) puis
+/// ouvre le dashboard. La zone de collecte est aussi géocodée (voir
+/// GeocodingService) et enregistrée comme point de référence du collecteur
+/// (voir CollectionService.setCollectorLocation) — sert au filtre "Près de
+/// moi" et aux notifications de nouveaux posts proches ; jamais bloquant
+/// pour la création du compte si le géocodage échoue.
 class CollectorSetupScreen extends StatefulWidget {
   final String uid;
   final String firstName;
@@ -29,6 +36,8 @@ class _CollectorSetupScreenState extends State<CollectorSetupScreen> {
   bool _isLoading = false;
 
   final _authService = AuthService();
+  final _collectionService = CollectionService();
+  final _geocodingService = GeocodingService();
 
   @override
   void dispose() {
@@ -47,6 +56,7 @@ class _CollectorSetupScreenState extends State<CollectorSetupScreen> {
         workStatus: _workStatus,
         companyName: _companyNameCtrl.text,
       );
+      await _geocodeAndSaveLocation();
       if (!mounted) return;
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(builder: (_) => const HomeScreen()),
@@ -58,6 +68,19 @@ class _CollectorSetupScreenState extends State<CollectorSetupScreen> {
           .showSnackBar(SnackBar(content: Text(s.authError('unknown'))));
     } finally {
       if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  /// Best-effort : un échec de géocodage (adresse introuvable, réseau) ne
+  /// doit jamais empêcher la création du compte — le collecteur pourra
+  /// toujours réessayer plus tard en modifiant sa zone depuis son profil.
+  Future<void> _geocodeAndSaveLocation() async {
+    try {
+      final result = await _geocodingService.geocode(_collectionZoneCtrl.text);
+      await _collectionService.setCollectorLocation(
+          widget.uid, result.latitude, result.longitude);
+    } catch (_) {
+      // Silencieux — voir doc ci-dessus.
     }
   }
 

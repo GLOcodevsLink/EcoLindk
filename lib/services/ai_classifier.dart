@@ -12,21 +12,18 @@ class AiClassificationException implements Exception {
 class AiClassificationResult {
   final WasteCategory category;
   final double confidence; // 0..1
-  /// Estimation de quantité renvoyée par l'IA, dans le même format que
-  /// [PostWasteScreen]'s _quantityOptions (ex. "1 - 5 kg") — `null` si le
-  /// modèle n'a pas pu estimer (photo trop cadrée, quantité peu claire).
-  final String? quantityRange;
+  /// Estimation du poids en kg renvoyée par l'IA — `null` si le modèle n'a
+  /// pas pu estimer (photo trop cadrée, quantité peu claire). [PostWasteScreen]
+  /// ne propose plus de paliers fixes (demande explicite : saisie libre,
+  /// approximative ou exacte) — cette estimation ne fait donc plus que
+  /// pré-remplir le champ, jamais un choix parmi une liste fermée.
+  final double? estimatedWeightKg;
   const AiClassificationResult({
     required this.category,
     required this.confidence,
-    this.quantityRange,
+    this.estimatedWeightKg,
   });
 }
-
-/// Les seules valeurs de quantité que [PostWasteScreen] sait afficher —
-/// l'IA doit choisir parmi celles-ci exactement (voir le prompt dans
-/// [classify]), jamais inventer son propre format.
-const _quantityOptions = ['< 1 kg', '1 - 5 kg', '5 - 10 kg', '10+ kg'];
 
 /// Analyse IA réelle d'une photo de déchet via l'API Gemini (voir
 /// GeminiService) — jamais une vérité : l'utilisateur confirme ou corrige
@@ -59,7 +56,7 @@ You are the waste-identification assistant inside the EcoLindk recyclable-waste 
 Look at the photo and identify the recyclable waste it shows.
 
 Respond with STRICT JSON only, matching exactly this shape:
-{"category": "<one of: plastic, paperCardboard, glass, metal, unsupported>", "confidence": <number 0 to 1>, "quantityRange": "<one of: ${_quantityOptions.join(', ')}, or null if unclear>"}
+{"category": "<one of: plastic, paperCardboard, glass, metal, unsupported>", "confidence": <number 0 to 1>, "estimatedWeightKg": <your best-guess weight in kilograms as a number, e.g. 3.5, or null if you really cannot estimate>}
 
 Rules:
 - "plastic" = plastic bottles/containers/packaging.
@@ -68,7 +65,7 @@ Rules:
 - "metal" = metal cans, aluminium, tin.
 - Use "unsupported" ONLY if the photo shows no recognizable recyclable material from this list.
 - Never invent a category outside this list.
-- "quantityRange" must be exactly one of the listed strings, or null.
+- "estimatedWeightKg" must be a plain positive number (no unit, no range), or null.
 - Return ONLY the JSON object, no extra text.
 ''';
 
@@ -96,13 +93,12 @@ Rules:
     }
 
     final confidence = (json['confidence'] as num?)?.toDouble() ?? 0.0;
-    final quantityRaw = json['quantityRange'] as String?;
-    final quantityRange = _quantityOptions.contains(quantityRaw) ? quantityRaw : null;
+    final weight = (json['estimatedWeightKg'] as num?)?.toDouble();
 
     return AiClassificationResult(
       category: matchedCategory,
       confidence: confidence.clamp(0.0, 1.0),
-      quantityRange: quantityRange,
+      estimatedWeightKg: (weight == null || weight <= 0) ? null : weight,
     );
   }
 

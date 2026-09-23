@@ -95,7 +95,7 @@ class AppStrings {
   String get registerSubtitle => _fr
       ? "Rejoignez EcoLindk et faites partie du changement ! 🌱"
       : "Join EcoLindk and be part of the change! 🌱";
-  String get signUpAs => _fr ? "SIGN UP AS" : "SIGN UP AS";
+  String get signUpAs => _fr ? "S'INSCRIRE EN TANT QUE" : "SIGN UP AS";
   String get roleHousehold => _fr ? "Fournisseur de déchets" : "Waste Provider";
   String get roleCollector => _fr ? "Collecteur" : "Collector";
 
@@ -132,8 +132,8 @@ class AppStrings {
       : "I accept the Terms of Use and Privacy Policy.";
 
   String get collectorPendingNote => _fr
-      ? "Après soumission, votre compte passe en statut « en attente ». L'administrateur vérifie votre demande avant activation."
-      : "After submission, your account status becomes \"pending\". The administrator reviews your request before activation.";
+      ? "Votre compte est activé dès sa création : vous pouvez commencer à collecter immédiatement."
+      : "Your account is active as soon as it's created — you can start collecting right away.";
 
   // ---- Register — formulaire en étapes ----
   String stepOf(int step, int total) =>
@@ -248,9 +248,6 @@ class AppStrings {
       : "Manage your pickups and your zone.";
   String get collectorTasksLabel => _fr ? "Collectes à faire" : "Pickups to do";
   String get collectorHistoryLabel => _fr ? "Historique" : "History";
-  String get accountPendingBanner => _fr
-      ? "Votre compte est en attente de vérification par un administrateur."
-      : "Your account is pending verification by an administrator.";
   String get myPoints => _fr ? "Mes points" : "My points";
   String get viewProfile => _fr ? "Voir mon profil" : "View my profile";
   String get quickActions => _fr ? "Actions rapides" : "Quick actions";

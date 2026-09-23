@@ -26,6 +26,11 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<!-- Speech-to-text dans l'Assistant IA (AiAssistantScreen) -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>EcoLindk utilise le micro pour la dictée vocale dans l'Assistant IA.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>EcoLindk utilise la reconnaissance vocale pour transcrire vos questions à l'Assistant IA.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

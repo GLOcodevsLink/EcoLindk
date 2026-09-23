@@ -15,22 +15,26 @@ import 'collector_setup_screen.dart';
 import 'home_screen.dart';
 import 'login_screen.dart';
 
-/// Inscription, en 3 étapes une fois le rôle choisi :
-/// 0. Choix du rôle — Fournisseur de déchets ou Collecteur, affiché sur
-///    cette même page (aucune navigation, voir [_role]/[_roleChoiceView]) via
-///    deux grandes cartes. Une fois choisi, ce choix est définitif pour le
-///    reste du formulaire : seul un badge rappelle le rôle choisi (voir
-///    [_roleBadge]) — plus aucun bouton vers l'autre rôle n'est visible
-///    (revenir en arrière depuis l'étape 1 ramène au choix, voir [_goBack]).
-/// 1. Identité — prénom, nom, email, mot de passe.
-/// 2. Adresse.
-/// 3. Téléphone + acceptation des conditions -> création du compte Firebase
+/// Inscription, en 3 étapes, formulaire affiché DÈS L'ARRIVÉE sur la page
+/// (demande explicite) :
+/// 0. Identité — prénom, nom, email, mot de passe.
+/// 1. Adresse.
+/// 2. Téléphone + acceptation des conditions -> création du compte Firebase
 ///    (email/mot de passe). Aucune vérification par SMS n'est requise : le
 ///    numéro est simplement enregistré sur le profil.
 ///
+/// Le rôle (Fournisseur de déchets / Collecteur) est choisi via deux LIENS
+/// côte à côte au-dessus du formulaire (voir [_roleLinks]) — jamais des
+/// boutons/cartes — et vaut [UserRole.household] (Fournisseur de déchets)
+/// PAR DÉFAUT tant que l'utilisateur ne clique pas sur "Collecteur" (demande
+/// explicite : "par défaut il devrait avoir le formulaire du fournisseur de
+/// déchets"). Cliquer sur l'autre lien bascule instantanément le formulaire
+/// affiché EN DESSOUS, toujours sur cette même page, sans navigation.
+///
 /// [presetRole] : si l'utilisateur est arrivé ici via un lien "S'inscrire
-/// comme Ménage/Collecteur" (voir LoginScreen), le rôle est déjà fixé et
-/// l'étape de choix (0) est sautée.
+/// comme Ménage/Collecteur" (voir LoginScreen), ce rôle est utilisé comme
+/// valeur initiale à la place du défaut Fournisseur de déchets — mais reste
+/// modifiable via les mêmes liens.
 class RegisterScreen extends StatefulWidget {
   final UserRole? presetRole;
   const RegisterScreen({super.key, this.presetRole});
@@ -63,15 +67,15 @@ class _RegisterScreenState extends State<RegisterScreen> {
   String _fullPhoneNumber = '';
   bool _isCreatingAccount = false;
 
-  /// `null` tant que l'utilisateur n'a pas choisi son rôle : dans ce cas
-  /// [_roleChoiceView] est affichée à la place du formulaire, sur cette même
-  /// page (voir doc de la classe). Initialisé depuis [widget.presetRole].
-  UserRole? _role;
+  /// Jamais `null` : par défaut [UserRole.household] (Fournisseur de
+  /// déchets), ou [widget.presetRole] si fourni — voir doc de la classe.
+  /// Modifiable à tout moment via [_roleLinks].
+  late UserRole _role;
 
   @override
   void initState() {
     super.initState();
-    _role = widget.presetRole;
+    _role = widget.presetRole ?? UserRole.household;
   }
 
   @override
@@ -107,21 +111,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
     }
   }
 
-  /// Étape 0 du formulaire -> retour au choix du rôle (même page, voir
-  /// [_role]) plutôt que de quitter l'écran, sauf si ce rôle était imposé
-  /// dès l'arrivée ([widget.presetRole]) : dans ce cas il n'y a pas de vue
-  /// "choix du rôle" à laquelle revenir, donc on quitte l'écran normalement.
   void _goBack() {
-    if (_role == null) {
-      Navigator.of(context).pop();
-      return;
-    }
     if (_step == 0) {
-      if (widget.presetRole == null) {
-        setState(() => _role = null);
-      } else {
-        Navigator.of(context).pop();
-      }
+      Navigator.of(context).pop();
     } else {
       setState(() => _step -= 1);
     }
@@ -161,14 +153,13 @@ class _RegisterScreenState extends State<RegisterScreen> {
     }
   }
 
-  /// Une fois le compte créé : finalise directement avec le rôle choisi en
-  /// étape 0 ([_role], toujours non-null ici puisque le formulaire n'est
-  /// atteignable qu'après ce choix — voir [_roleChoiceView]).
+  /// Une fois le compte créé : finalise directement avec le rôle choisi via
+  /// [_roleLinks] (toujours défini — voir [_role]).
   Future<void> _proceedAfterAccountCreation(UserCredential credential) async {
     final uid = credential.user!.uid;
     final firstName = _firstNameCtrl.text.trim();
 
-    switch (_role!) {
+    switch (_role) {
       case UserRole.household:
         await _authService.completeHouseholdRegistration(uid);
         if (!mounted) return;
@@ -239,13 +230,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
                             ],
                           ),
                           const SizedBox(height: 6),
-                          if (_role != null) ...[
-                            _StepIndicator(
-                                step: _step,
-                                total: _totalSteps,
-                                label: s.stepOf(_step + 1, _totalSteps)),
-                            const SizedBox(height: 14),
-                          ],
+                          _StepIndicator(
+                              step: _step,
+                              total: _totalSteps,
+                              label: s.stepOf(_step + 1, _totalSteps)),
+                          const SizedBox(height: 14),
                           Text(s.registerTitle,
                               style: TextStyle(
                                   fontSize: 22,
@@ -255,38 +244,65 @@ class _RegisterScreenState extends State<RegisterScreen> {
                           Text(s.registerSubtitle,
                               style: TextStyle(
                                   fontSize: 12.5, color: AppColors.textGray)),
-                          if (_role != null) ...[
-                            const SizedBox(height: 8),
-                            _roleBadge(s),
-                          ],
-                          const SizedBox(height: 18),
+                          const SizedBox(height: 14),
+                          _roleLinks(s),
+                          const SizedBox(height: 16),
                           Expanded(
                             child: SingleChildScrollView(
-                              child: _role == null
-                                  ? _roleChoiceView(s)
-                                  : switch (_step) {
-                                      0 => _identityStep(s),
-                                      1 => _addressStep(s),
-                                      _ => _phoneStep(s),
-                                    },
+                              // Transition brève (demande explicite :
+                              // "quand l'utilisateur clique sur collecteur
+                              // ça doit au moins lui montrer que quelque
+                              // chose a changé") — la clé inclut [_role] en
+                              // plus de [_step] : même quand les champs
+                              // affichés sont identiques entre les deux
+                              // rôles, ce fondu+glissement confirme
+                              // visuellement le changement, sans jamais
+                              // changer de page.
+                              child: AnimatedSwitcher(
+                                duration: const Duration(milliseconds: 220),
+                                switchInCurve: Curves.easeOut,
+                                switchOutCurve: Curves.easeIn,
+                                transitionBuilder: (child, animation) =>
+                                    FadeTransition(
+                                  opacity: animation,
+                                  child: SlideTransition(
+                                    position: Tween<Offset>(
+                                      begin: const Offset(0, 0.04),
+                                      end: Offset.zero,
+                                    ).animate(animation),
+                                    child: child,
+                                  ),
+                                ),
+                                child: KeyedSubtree(
+                                  key: ValueKey('$_step-$_role'),
+                                  child: switch (_step) {
+                                    0 => _identityStep(s),
+                                    1 => _addressStep(s),
+                                    _ => _phoneStep(s),
+                                  },
+                                ),
+                              ),
                             ),
                           ),
                           const SizedBox(height: 12),
-                          if (_role != null)
-                            _isCreatingAccount
-                                ? const Padding(
-                                    padding: EdgeInsets.symmetric(vertical: 14),
-                                    child: CircularProgressIndicator(
-                                        color: AppColors.greenMid,
-                                        strokeWidth: 2.4),
-                                  )
-                                : GradientPillButton(
-                                    label:
-                                        _step == 2 ? s.createMyAccount : s.next,
-                                    onPressed: _step == 2
-                                        ? () => _createAccount(s)
-                                        : () => _goNext(lang),
-                                  ),
+                          _isCreatingAccount
+                              ? const Padding(
+                                  padding: EdgeInsets.symmetric(vertical: 14),
+                                  child: CircularProgressIndicator(
+                                      color: AppColors.greenMid,
+                                      strokeWidth: 2.4),
+                                )
+                              : GradientPillButton(
+                                  label:
+                                      _step == 2 ? s.createMyAccount : s.next,
+                                  onPressed: _step == 2
+                                      ? () => _createAccount(s)
+                                      : () => _goNext(lang),
+                                  // Vert moins pastel que le reste de
+                                  // l'app (demande explicite) sur
+                                  // Connexion/Inscription.
+                                  gradient: AppColors.authButtonGradient,
+                                ),
                           const SizedBox(height: 18),
                           Center(
                             child: RichText(
@@ -326,97 +342,43 @@ class _RegisterScreenState extends State<RegisterScreen> {
     );
   }
 
-  /// Étape 0, affichée tant que [_role] est `null` : deux grandes cartes
-  /// "Fournisseur de déchets" / "Collecteur". Taper l'une d'elles fixe
-  /// [_role] (setState) — pas de Navigator.push, on reste sur cette même
-  /// page qui se redessine alors avec le formulaire (voir [build]).
-  Widget _roleChoiceView(AppStrings s) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+  /// Fournisseur de déchets à GAUCHE, Collecteur à DROITE — de simples LIENS
+  /// texte (demande explicite : "les deux choix doivent être des liens côte
+  /// à côte pas des boutons"), toujours visibles au-dessus du formulaire.
+  /// Taper l'un des deux change [_role] (setState) et bascule instantanément
+  /// le formulaire affiché en dessous, toujours sur cette même page.
+  Widget _roleLinks(AppStrings s) {
+    return Row(
       children: [
-        Text(s.signUpAs,
-            style: TextStyle(
-                fontSize: 11.5,
-                fontWeight: FontWeight.w700,
-                color: AppColors.textGray,
-                letterSpacing: 0.6)),
-        const SizedBox(height: 12),
-        ...UserRole.values.map(
-          (role) => Padding(
-            padding: const EdgeInsets.only(bottom: 14),
-            child: _roleChoiceCard(role, s),
-          ),
-        ),
+        _roleLink(UserRole.household, s),
+        const SizedBox(width: 24),
+        _roleLink(UserRole.collector, s),
       ],
     );
   }
 
-  Widget _roleChoiceCard(UserRole role, AppStrings s) {
+  Widget _roleLink(UserRole role, AppStrings s) {
+    final active = _role == role;
     return GestureDetector(
       onTap: () => setState(() => _role = role),
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 16),
-        decoration: BoxDecoration(
-          color: AppColors.card,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppColors.line, width: 1.4),
-          boxShadow: [
-            BoxShadow(
-                color: Colors.black.withOpacity(0.03),
-                blurRadius: 10,
-                offset: const Offset(0, 4)),
-          ],
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 42,
-              height: 42,
-              decoration: BoxDecoration(
-                gradient: AppColors.buttonGradient,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Icon(role.icon, color: Colors.white, size: 21),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Text(role.label(s),
-                  style: TextStyle(
-                      fontSize: 14.5,
-                      fontWeight: FontWeight.w800,
-                      color: AppColors.mainText)),
-            ),
-            Icon(Icons.arrow_forward_ios, size: 13, color: AppColors.textGray),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// Affiché une fois [_role] choisi, en haut du formulaire : simple rappel
-  /// non interactif du rôle choisi — aucun bouton vers l'autre rôle n'est
-  /// visible ici (le choix est définitif ; revenir en arrière depuis
-  /// l'étape 1 ramène à [_roleChoiceView] si l'on veut vraiment changer —
-  /// voir [_goBack]).
-  Widget _roleBadge(AppStrings s) {
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        decoration: BoxDecoration(
-          color: AppColors.greenBright.withOpacity(0.15),
-          borderRadius: BorderRadius.circular(999),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(_role!.icon, size: 14, color: AppColors.greenDeep),
-            const SizedBox(width: 6),
-            Text(_role!.label(s),
-                style: TextStyle(
-                    fontSize: 11.5, fontWeight: FontWeight.w700, color: AppColors.greenDeep)),
-          ],
-        ),
+      behavior: HitTestBehavior.opaque,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Text(role.label(s),
+              style: TextStyle(
+                  fontSize: 13.5,
+                  fontWeight: active ? FontWeight.w800 : FontWeight.w600,
+                  color: active ? AppColors.authGreenDeep : AppColors.textGray)),
+          const SizedBox(height: 4),
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            height: 2,
+            width: 26,
+            color: active ? AppColors.authGreenDeep : Colors.transparent,
+          ),
+        ],
       ),
     );
   }

@@ -13,6 +13,8 @@ enum NotificationType {
   referralCompleted,
   accountStatus,
   announcement,
+  newNearbyPost,
+  collectionRejected,
 }
 
 extension NotificationTypeX on NotificationType {
@@ -25,6 +27,8 @@ extension NotificationTypeX on NotificationType {
         NotificationType.referralCompleted => Icons.card_giftcard_outlined,
         NotificationType.accountStatus => Icons.verified_user_outlined,
         NotificationType.announcement => Icons.campaign_outlined,
+        NotificationType.newNearbyPost => Icons.location_on_outlined,
+        NotificationType.collectionRejected => Icons.replay_outlined,
       };
 
   /// Couleur d'accent par type — le centre de notifications ne doit pas se
@@ -38,6 +42,8 @@ extension NotificationTypeX on NotificationType {
         NotificationType.referralCompleted => const Color(0xFFE08E2C),
         NotificationType.accountStatus => const Color(0xFF17A398),
         NotificationType.announcement => const Color(0xFFB5792B),
+        NotificationType.newNearbyPost => const Color(0xFF2094C4),
+        NotificationType.collectionRejected => Colors.redAccent,
       };
 }
 

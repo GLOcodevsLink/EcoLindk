@@ -3,6 +3,7 @@ import '../../core/l10n/app_language.dart';
 import '../../core/theme.dart';
 import '../../models/collection_rating.dart';
 import '../../models/collection_request.dart';
+import '../../services/auth_service.dart';
 import '../../services/collection_service.dart';
 import '../../services/rating_service.dart';
 import '../../widgets/decorative_leaves.dart';
@@ -12,7 +13,12 @@ import 'rating_screen.dart';
 
 /// Détail + fiche de traçabilité d'une collecte terminée (ou annulée) — voir
 /// règle métier #10/#14/#21 : type de déchet, poids, prix/valeur, date,
-/// collecteur, fournisseur, référence, statut.
+/// collecteur, fournisseur, référence, statut. Écran partagé Fournisseur ET
+/// Collecteur (voir CollectionHistoryScreen / CollectorHistoryScreen) : le
+/// poids/valeur/points et l'action "Évaluer le collecteur" restent affichés
+/// systématiquement (ce sont les données factuelles de LA collecte), sauf la
+/// notation elle-même, jamais proposée à un Collecteur qui se noterait
+/// lui-même.
 class CollectionDetailScreen extends StatelessWidget {
   final CollectionRequest request;
   const CollectionDetailScreen({super.key, required this.request});
@@ -127,6 +133,12 @@ class CollectionDetailScreen extends StatelessWidget {
                                         ],
                                       ),
                                     );
+                                  }
+                                  // Jamais proposé à un Collecteur qui se
+                                  // noterait lui-même — uniquement au
+                                  // Fournisseur qui a posté cette demande.
+                                  if (AuthService().currentUser?.uid != r.householdUid) {
+                                    return const SizedBox.shrink();
                                   }
                                   return GradientPillButton(
                                     label: fr ? "Évaluer le collecteur" : "Rate the collector",

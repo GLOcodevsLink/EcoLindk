@@ -335,7 +335,12 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                   )
                 : GradientPillButton(
-                    label: s.logIn, onPressed: () => _submit(s)),
+                    label: s.logIn,
+                    onPressed: () => _submit(s),
+                    // Vert moins pastel que le reste de l'app (demande
+                    // explicite) sur Connexion/Inscription.
+                    gradient: AppColors.authButtonGradient,
+                  ),
             const SizedBox(height: 22),
             Row(children: [
               Expanded(child: Divider(color: AppColors.line)),
@@ -489,7 +494,7 @@ class _LoginScreenState extends State<LoginScreen> {
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.symmetric(vertical: 10),
         decoration: BoxDecoration(
-          gradient: active ? AppColors.buttonGradient : null,
+          gradient: active ? AppColors.authButtonGradient : null,
           borderRadius: BorderRadius.circular(999),
         ),
         child: Text(

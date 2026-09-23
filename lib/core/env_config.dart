@@ -31,4 +31,12 @@ class EnvConfig {
   /// réel à l'API Gemini.
   static bool get hasGeminiApiKey =>
       geminiApiKey.isNotEmpty && geminiApiKey != 'YOUR_GEMINI_API_KEY_HERE';
+
+  /// URL de base de l'API StockImg (hébergement des photos, remplace
+  /// Firebase Storage — voir services/stockimg_client.dart), sans `/api/v1`.
+  /// Ex. `STOCKIMG_BASE_URL=https://mon-domaine.com`.
+  static String get stockImgBaseUrl => dotenv.env['STOCKIMG_BASE_URL'] ?? '';
+
+  /// Clé API StockImg (`STOCKIMG_API_KEY=...`), générée depuis le dashboard.
+  static String get stockImgApiKey => dotenv.env['STOCKIMG_API_KEY'] ?? '';
 }

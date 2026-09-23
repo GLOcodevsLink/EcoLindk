@@ -14,9 +14,11 @@ import '../landing_screen.dart';
 /// (voir onboarding_animations.dart) ; le 5e reprend l'écran de réglages
 /// rapides (notifications / mode sombre).
 ///
-/// Fond SOMBRE sur tout l'onboarding (demande explicite) — texte et
-/// éléments d'interface adaptés en conséquence (blanc/gris clair au lieu
-/// de vert foncé sur fond clair).
+/// Fond sombre sur tout l'onboarding, mais volontairement ÉCLAIRCI par
+/// rapport au vrai mode sombre de l'app (demande explicite : "rend les
+/// onboarding page moins sombre, les écritures doivent être bien visible")
+/// — voir [AppColors.onboardingBackground]. Texte et éléments d'interface
+/// restent en blanc/gris clair, qui garde un très bon contraste sur ce fond.
 class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({super.key});
 
@@ -133,7 +135,7 @@ class _OnboardingScreenState extends State<OnboardingScreen>
           builder: (context, lang, _) {
             final s = AppStrings.of(lang);
             return Scaffold(
-              backgroundColor: AppColors.darkBackground,
+              backgroundColor: AppColors.onboardingBackground,
               body: SafeArea(
                 child: Column(
                   children: [
@@ -355,7 +357,7 @@ class _OnboardingScreenState extends State<OnboardingScreen>
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
       decoration: BoxDecoration(
-          color: AppColors.darkSurface,
+          color: AppColors.onboardingSurface,
           borderRadius: BorderRadius.circular(12)),
       child: Row(
         children: [

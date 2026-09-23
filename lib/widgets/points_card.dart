@@ -1,4 +1,7 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
+import 'package:remixicon/remixicon.dart';
 import '../core/theme.dart';
 import '../services/wallet_service.dart';
 
@@ -157,7 +160,7 @@ class PointsCard extends StatelessWidget {
                                           fontSize: 11.5,
                                           fontWeight: FontWeight.w700)),
                                   const SizedBox(width: 4),
-                                  const Icon(Icons.arrow_forward,
+                                  const Icon(RemixIcons.arrow_right_fill,
                                       color: AppColors.pointsCardButtonText,
                                       size: 13),
                                 ],
@@ -193,19 +196,17 @@ String _formatPoints(int n) {
   return buffer.toString();
 }
 
-/// Badge de la carte "Mes points" — reproduit la maquette de référence
-/// (mesurée par échantillonnage direct de ses pixels, voir la doc de
-/// [AppColors.pointsCardGradient]) : un cercle VERT posé sur le dégradé de
-/// la carte, une couronne de feuilles en lame (pointues, incurvées — pas des
-/// amandes symétriques) qui l'ENTOURE COMPLÈTEMENT comme un bouquet de fond,
-/// et le trophée doré (dégradé clair→ambré + médaillon rond) posé dessus,
-/// dimensionné pour remplir le cercle comme sur la référence.
+/// Badge de la carte "Mes points" — un cercle VERT posé sur le dégradé de
+/// la carte, et le trophée doré (dégradé clair→ambré + médaillon rond) posé
+/// dessus, dimensionné pour remplir le cercle.
 ///
-/// Feuilles agrandies et reparties tout autour du cercle (demande explicite :
-/// "put the leaves bigger and all around as a background of the trophy...
-/// look well at the prototype") — couvrent maintenant aussi le côté gauche
-/// (complètement absent d'une itération précédente, trop resserrée), pour
-/// un vrai bouquet en couronne plutôt qu'un simple accent haut/droite.
+/// Deux familles de feuilles (demande explicite : garder à la fois "de
+/// larges feuilles" à la racine ET "ces plus petites feuilles tout autour,
+/// du côté gauche au droit, en passant par le haut") : un éventail large à
+/// la RACINE (bas) du cercle façon couverture/nid, ET une couronne de
+/// petites feuilles qui referme le tour par le haut (gauche → sommet →
+/// droite). Le trophée est agrandi et reçoit un effet "coffre au trésor" —
+/// rayons dorés qui rayonnent derrière lui, halo et reflet brillant.
 class _TrophyWithLeaves extends StatelessWidget {
   const _TrophyWithLeaves();
 
@@ -215,39 +216,51 @@ class _TrophyWithLeaves extends StatelessWidget {
   static const _backLeaf = Color(0xFF1F8F72);
   static const _frontLeaf = Color(0xFF3FB25A);
 
-  // Chaque feuille : décalage depuis le centre du cercle (dx, dy), taille,
-  // angle et teinte. Couronne COMPLÈTE tout autour du cercle (haut, droite,
-  // bas, gauche) — pas juste un bouquet en haut, comme sur la maquette.
-  static const _leaves = [
-    // Groupe du haut (feuilles "de fond", en éventail).
-    (dx: -23.0, dy: -53.0, size: 39.0, angle: -0.35, color: _backLeaf),
-    (dx: 2.0, dy: -60.0, size: 41.0, angle: 0.0, color: _backLeaf),
-    (dx: 28.0, dy: -53.0, size: 37.0, angle: 0.4, color: _backLeaf),
-    // Côté droit.
-    (dx: 48.0, dy: -30.0, size: 30.0, angle: 0.85, color: _frontLeaf),
-    (dx: 55.0, dy: 2.0, size: 25.0, angle: 1.3, color: _backLeaf),
-    (dx: 48.0, dy: 30.0, size: 25.0, angle: 1.7, color: _frontLeaf),
-    // Bas.
-    (dx: 16.0, dy: 52.0, size: 30.0, angle: 2.2, color: _frontLeaf),
-    (dx: -21.0, dy: 48.0, size: 35.0, angle: -1.8, color: _backLeaf),
-    // Côté gauche — pour boucler la couronne (manquait avant).
-    (dx: -48.0, dy: 7.0, size: 34.0, angle: -1.3, color: _frontLeaf),
-    (dx: -46.0, dy: -26.0, size: 27.0, angle: -0.9, color: _backLeaf),
+  // Grand éventail à la racine (bas) du cercle, façon couverture/nid.
+  static const _largeLeaves = [
+    (dx: -52.0, dy: 26.0, size: 56.0, angle: -1.0, color: _backLeaf),
+    (dx: -30.0, dy: 40.0, size: 64.0, angle: -0.55, color: _frontLeaf),
+    (dx: -6.0, dy: 47.0, size: 60.0, angle: -0.12, color: _backLeaf),
+    (dx: 16.0, dy: 46.0, size: 62.0, angle: 0.22, color: _frontLeaf),
+    (dx: 38.0, dy: 38.0, size: 56.0, angle: 0.62, color: _backLeaf),
+    (dx: 55.0, dy: 22.0, size: 50.0, angle: 1.05, color: _frontLeaf),
+  ];
+
+  // Petite couronne qui ferme le tour par le haut : gauche -> sommet ->
+  // droite (demande explicite).
+  static const _smallLeaves = [
+    (dx: -48.0, dy: -6.0, size: 25.0, angle: -1.3, color: _frontLeaf),
+    (dx: -36.0, dy: -33.0, size: 27.0, angle: -0.8, color: _backLeaf),
+    (dx: -13.0, dy: -48.0, size: 25.0, angle: -0.25, color: _frontLeaf),
+    (dx: 13.0, dy: -48.0, size: 25.0, angle: 0.25, color: _backLeaf),
+    (dx: 36.0, dy: -33.0, size: 27.0, angle: 0.8, color: _frontLeaf),
+    (dx: 48.0, dy: -6.0, size: 25.0, angle: 1.3, color: _backLeaf),
   ];
 
   @override
   Widget build(BuildContext context) {
-    const cx = 64.0, cy = 62.0; // centre du cercle dans le SizedBox ci-dessous
+    const cx = 68.0, cy = 64.0; // centre du cercle dans le SizedBox ci-dessous
     return SizedBox(
-      width: 129,
-      height: 115,
+      width: 136,
+      height: 124,
       child: Stack(
         clipBehavior: Clip.none,
         children: [
-          // Feuilles d'abord (couche du bas) : le cercle posé par-dessus
+          // Rayons dorés en fond — effet "coffre au trésor qui s'ouvre"
+          // (demande explicite), derrière tout le reste.
+          Positioned(
+            left: cx - 58,
+            top: cy - 58,
+            child: const SizedBox(
+              width: 116,
+              height: 116,
+              child: CustomPaint(painter: _RaysPainter()),
+            ),
+          ),
+          // Feuilles ensuite (couche du bas) : le cercle posé par-dessus
           // masque leur base, donnant l'impression qu'elles émergent de
           // derrière lui plutôt que d'être collées à côté.
-          for (final leaf in _leaves)
+          for (final leaf in [..._largeLeaves, ..._smallLeaves])
             Positioned(
               left: cx + leaf.dx - leaf.size * 0.3,
               top: cy + leaf.dy - leaf.size * 0.5,
@@ -255,11 +268,11 @@ class _TrophyWithLeaves extends StatelessWidget {
                   size: leaf.size, rotation: leaf.angle, color: leaf.color),
             ),
           Positioned(
-            left: cx - 33,
-            top: cy - 33,
+            left: cx - 37,
+            top: cy - 37,
             child: Container(
-              width: 66,
-              height: 66,
+              width: 74,
+              height: 74,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 // Dégradé radial (au lieu d'un aplat) + liseré clair — un
@@ -282,42 +295,16 @@ class _TrophyWithLeaves extends StatelessWidget {
               ),
             ),
           ),
-          // Trophée agrandi (48, contre 38 avant) pour remplir le cercle
-          // presque bord à bord, comme sur la maquette.
+          // Trophée — repris À L'IDENTIQUE de la capture de référence
+          // fournie par l'utilisateur (demande explicite : "do only the
+          // trophee head exactly this way") : juste l'icône, en plein or,
+          // SANS halo, sans reflet glossy, sans médaillon — ces ajouts ont
+          // été retirés, ils ne sont pas dans la maquette.
           Positioned(
-            left: cx - 24,
-            top: cy - 25,
-            child: SizedBox(
-              width: 48,
-              height: 48,
-              child: Stack(
-                alignment: Alignment.center,
-                children: [
-                  ShaderMask(
-                    shaderCallback: (rect) => const LinearGradient(
-                      colors: [Color(0xFFFFE38A), Color(0xFFE8A317)],
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                    ).createShader(rect),
-                    child: const Icon(Icons.emoji_events_rounded,
-                        color: Colors.white, size: 48),
-                  ),
-                  // Médaillon rond au centre de la coupe, comme sur la
-                  // maquette (pas un losange).
-                  Positioned(
-                    top: 17,
-                    child: Container(
-                      width: 11,
-                      height: 11,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Colors.white.withOpacity(0.55),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
+            left: cx - 28,
+            top: cy - 29,
+            child: const Icon(RemixIcons.trophy_fill,
+                color: Color(0xFFFFC940), size: 56),
           ),
         ],
       ),
@@ -382,4 +369,48 @@ class _BadgeLeafPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _BadgeLeafPainter oldDelegate) =>
       oldDelegate.color != color;
+}
+
+/// Rayons dorés qui rayonnent depuis le centre du badge, comme la lumière
+/// d'un coffre au trésor qui s'ouvre (demande explicite) — alternance de
+/// rayons longs/courts et clairs/plus discrets pour un rendu moins
+/// mécanique qu'un simple soleil régulier.
+class _RaysPainter extends CustomPainter {
+  const _RaysPainter();
+
+  static const _rayCount = 16;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final maxRadius = size.width / 2;
+    final paint = Paint()..style = PaintingStyle.fill;
+
+    for (var i = 0; i < _rayCount; i++) {
+      final angle = (2 * math.pi / _rayCount) * i;
+      final isLong = i.isEven;
+      final length = maxRadius * (isLong ? 1.0 : 0.68);
+      final halfSpread = isLong ? 0.10 : 0.06;
+
+      paint.color = const Color(0xFFFFD54F)
+          .withOpacity(isLong ? 0.55 : 0.30);
+
+      final tip1 = center +
+          Offset(math.cos(angle - halfSpread) * length,
+              math.sin(angle - halfSpread) * length);
+      final tip2 = center +
+          Offset(math.cos(angle + halfSpread) * length,
+              math.sin(angle + halfSpread) * length);
+
+      final path = Path()
+        ..moveTo(center.dx, center.dy)
+        ..lineTo(tip1.dx, tip1.dy)
+        ..lineTo(tip2.dx, tip2.dy)
+        ..close();
+      canvas.drawPath(path, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _RaysPainter oldDelegate) => false;
 }

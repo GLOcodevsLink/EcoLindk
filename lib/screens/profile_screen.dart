@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import '../core/theme.dart';
 import '../models/user_role.dart';
 import '../services/auth_service.dart';
+import '../services/collection_service.dart';
+import '../services/geocoding_service.dart';
 import '../widgets/decorative_leaves.dart';
 import '../widgets/gradient_pill_button.dart';
 import '../core/l10n/app_language.dart';
@@ -98,6 +100,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
     try {
       await _authService.updateProfileFields(uid, fields);
+      // Re-géocode le point de référence du collecteur si sa zone a changé —
+      // best-effort, voir CollectorSetupScreen (même logique à la création).
+      if (_role == UserRole.collector) {
+        await _geocodeAndSaveLocation(uid);
+      }
       if (!mounted) return;
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text(s.profileUpdated)));
@@ -108,6 +115,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
           .showSnackBar(SnackBar(content: Text(s.authError('unknown'))));
     } finally {
       if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
+  Future<void> _geocodeAndSaveLocation(String uid) async {
+    try {
+      final result = await GeocodingService().geocode(_collectionZoneController.text);
+      await CollectionService().setCollectorLocation(uid, result.latitude, result.longitude);
+    } catch (_) {
+      // Silencieux — voir CollectorSetupScreen._geocodeAndSaveLocation.
     }
   }
 

@@ -8,6 +8,10 @@ class GradientPillButton extends StatelessWidget {
   final VoidCallback onPressed;
   final IconData? trailingIcon;
   final bool outlined;
+  /// Dégradé de remplacement — utilisé par Connexion/Inscription pour un
+  /// vert moins pastel que le reste de l'app (demande explicite), laissé à
+  /// `null` partout ailleurs pour garder [AppColors.buttonGradient].
+  final Gradient? gradient;
 
   const GradientPillButton({
     super.key,
@@ -15,6 +19,7 @@ class GradientPillButton extends StatelessWidget {
     required this.onPressed,
     this.trailingIcon = Icons.arrow_forward,
     this.outlined = false,
+    this.gradient,
   });
 
   @override
@@ -50,15 +55,8 @@ class GradientPillButton extends StatelessWidget {
       width: double.infinity,
       height: 52,
       decoration: BoxDecoration(
-        gradient: AppColors.buttonGradient,
+        gradient: gradient ?? AppColors.buttonGradient,
         borderRadius: BorderRadius.circular(999),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.greenMid.withOpacity(0.35),
-            blurRadius: 16,
-            offset: const Offset(0, 8),
-          ),
-        ],
       ),
       child: Material(
         color: Colors.transparent,

@@ -10,10 +10,12 @@ service cloud.firestore {
     // jour qui fixe le rôle n'est autorisée qu'une seule fois (transition
     // null -> valeur) et seulement avec la paire cohérente attendue :
     //   - household -> verificationStatus "verified" (immédiat)
-    //   - collector -> verificationStatus "pending" (attend un admin)
+    //   - collector -> verificationStatus "verified" (immédiat aussi —
+    //     demande explicite : "il ne devrait pas avoir [de validation
+    //     admin], il crée juste son compte et puis c'est tout", plus de
+    //     statut "pending" pour un Collecteur)
     // Une fois le rôle fixé, ni `role` ni `verificationStatus` ne peuvent
-    // plus changer depuis le client (seule une Cloud Function admin — via
-    // le SDK Admin, qui contourne ces règles — peut valider un Collecteur).
+    // plus changer depuis le client.
     match /users/{userId} {
       allow read: if request.auth != null && request.auth.uid == userId;
 
@@ -24,12 +26,9 @@ service cloud.firestore {
                     && (
                          (
                            resource.data.role == null &&
-                           (
-                             (request.resource.data.role == 'household' &&
-                              request.resource.data.verificationStatus == 'verified') ||
-                             (request.resource.data.role == 'collector' &&
-                              request.resource.data.verificationStatus == 'pending')
-                           )
+                           (request.resource.data.role == 'household' ||
+                            request.resource.data.role == 'collector') &&
+                           request.resource.data.verificationStatus == 'verified'
                          ) ||
                          (
                            resource.data.role != null &&
@@ -109,15 +108,40 @@ service cloud.firestore {
             && request.resource.data.collectorUid == request.auth.uid
             && request.resource.data.status == 'accepted')
           ||
-          // Le collecteur déjà assigné fait avancer/termine la collecte —
-          // seuls les champs de résultat changent, jamais l'identité des
-          // deux parties de la demande.
+          // Le collecteur déjà assigné soumet poids/prix après la rencontre
+          // (voir CollectionService.submitCollectionResult) — seuls les
+          // champs de résultat changent, jamais l'identité des deux parties
+          // de la demande.
           (resource.data.collectorUid == request.auth.uid
+            && request.resource.data.householdUid == resource.data.householdUid
+            && request.resource.data.collectorUid == resource.data.collectorUid)
+          ||
+          // Le Fournisseur confirme ou refuse le poids/prix soumis, après
+          // avoir scanné le QR du collecteur (voir
+          // CollectionService.confirmCollectionResult/rejectCollectionResult) —
+          // seul lui peut faire passer une demande `inProgress` (en attente
+          // de sa confirmation) vers `completed` (accepté) ou `accepted`
+          // (refusé, le collecteur resoumettra).
+          (resource.data.householdUid == request.auth.uid
+            && resource.data.status == 'inProgress'
+            && (request.resource.data.status == 'completed'
+                || request.resource.data.status == 'accepted')
             && request.resource.data.householdUid == resource.data.householdUid
             && request.resource.data.collectorUid == resource.data.collectorUid)
       );
 
       allow delete: if false;
+    }
+
+    // Point de référence géocodé d'un Collecteur (voir
+    // CollectionService.setCollectorLocation) — séparé de `users/{uid}` car
+    // TOUT utilisateur authentifié doit pouvoir le lire pour calculer une
+    // distance (filtre "Près de moi", notification de nouveau post proche),
+    // ce qui serait beaucoup trop large comme permission sur la fiche
+    // utilisateur complète. Seul le collecteur lui-même écrit sa position.
+    match /collectorLocations/{uid} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == uid;
     }
 
     // Portefeuille à points — voir WalletService. Strictement personnel :
@@ -176,9 +200,12 @@ service cloud.firestore {
 
     // Centre de notifications — voir NotificationService. Chacun peut créer
     // ses propres notifications ; un collecteur peut aussi notifier le
-    // Fournisseur de LA demande à laquelle il est réellement assigné (seule
-    // exception "écriture chez un autre utilisateur" du fichier — sans
-    // impact sur l'argent/les points, juste un risque de spam visuel).
+    // Fournisseur de LA demande à laquelle il est réellement assigné, et un
+    // Fournisseur peut notifier n'importe quel Collecteur qu'un de ses
+    // propres posts est proche (voir CollectionService._notifyNearbyCollectors)
+    // — seules exceptions "écriture chez un autre utilisateur" du fichier,
+    // toutes deux sans impact sur l'argent/les points, juste un risque de
+    // spam visuel.
     match /notifications/{uid} {
       match /items/{itemId} {
         allow read, update: if request.auth != null && request.auth.uid == uid;
@@ -187,6 +214,9 @@ service cloud.firestore {
             || (request.resource.data.relatedRequestId is string
                 && get(/databases/$(database)/documents/collectionRequests/$(request.resource.data.relatedRequestId)).data.collectorUid == request.auth.uid
                 && get(/databases/$(database)/documents/collectionRequests/$(request.resource.data.relatedRequestId)).data.householdUid == uid)
+            || (request.resource.data.type == 'newNearbyPost'
+                && request.resource.data.relatedRequestId is string
+                && get(/databases/$(database)/documents/collectionRequests/$(request.resource.data.relatedRequestId)).data.householdUid == request.auth.uid)
         );
         allow delete: if false;
       }

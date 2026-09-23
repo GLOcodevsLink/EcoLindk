@@ -1,4 +1,3 @@
-import 'dart:math';
 import 'package:geolocator/geolocator.dart';
 
 enum LocationPermissionResult { granted, deniedOnce, deniedForever, serviceDisabled }
@@ -7,10 +6,11 @@ class ResolvedLocation {
   final double latitude;
   final double longitude;
 
-  /// `true` quand ces coordonnées viennent du géocodage simulé d'une adresse
-  /// tapée (voir [GeoHelper.approximateFromAddress]) plutôt que d'une vraie
-  /// lecture GPS — l'UI doit alors afficher "approximatif", jamais faire
-  /// comme si c'était une position précise.
+  /// `true` quand ces coordonnées viennent du géocodage d'une adresse tapée
+  /// (voir GeocodingService, appelé depuis PostWasteScreen) plutôt que d'une
+  /// vraie lecture GPS — l'UI affiche alors "approximatif" (l'adresse peut
+  /// être moins précise qu'une position GPS directe), jamais comme si
+  /// c'était une position mesurée sur l'appareil.
   final bool isApproximate;
 
   const ResolvedLocation({
@@ -26,12 +26,6 @@ class ResolvedLocation {
 /// "Utiliser le GPS").
 class GeoHelper {
   const GeoHelper._();
-
-  // Point de référence pour le géocodage simulé (Douala, Cameroun) — voir
-  // [approximateFromAddress]. À remplacer par un vrai géocodage quand une
-  // API de cartes sera branchée.
-  static const _refLat = 4.0511;
-  static const _refLng = 9.7679;
 
   static Future<LocationPermissionResult> _ensurePermission() async {
     if (!await Geolocator.isLocationServiceEnabled()) {
@@ -66,18 +60,5 @@ class GeoHelper {
           latitude: pos.latitude, longitude: pos.longitude, isApproximate: false),
       permissionResult,
     );
-  }
-
-  /// Pas de vraie API de géocodage branchée pour l'instant (voir la suite du
-  /// projet). Dérive des coordonnées stables (toujours les mêmes pour la
-  /// même adresse tapée, via un hash) autour du point de référence, pour
-  /// qu'un pin cohérent s'affiche quand même — toujours marqué
-  /// [ResolvedLocation.isApproximate] pour rester honnête dans l'UI.
-  static ResolvedLocation approximateFromAddress(String address) {
-    final rnd = Random(address.trim().toLowerCase().hashCode);
-    final dLat = (rnd.nextDouble() - 0.5) * 0.08; // ~ ± 4 km
-    final dLng = (rnd.nextDouble() - 0.5) * 0.08;
-    return ResolvedLocation(
-        latitude: _refLat + dLat, longitude: _refLng + dLng, isApproximate: true);
   }
 }

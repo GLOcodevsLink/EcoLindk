@@ -11,6 +11,8 @@
     <uses-permission android:name="android.permission.CAMERA"/>
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <!-- Speech-to-text dans l'Assistant IA (AiAssistantScreen) -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <application
         android:label="ecolindk"
         android:name="${applicationName}"
@@ -52,6 +54,18 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- Sans ces deux entrées, Android 11+ (API 30+) cache le moteur de
+             reconnaissance vocale du système à l'app (restriction de
+             "package visibility") : speech_to_text.initialize() renvoie
+             silencieusement `false`, donc le bouton micro de
+             AiAssistantScreen ne s'affiche jamais — symptôme exact de "la
+             saisie vocale ne marche pas" sans aucune erreur visible. -->
+        <intent>
+            <action android:name="android.speech.RecognitionService"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE"/>
         </intent>
     </queries>
 </manifest>

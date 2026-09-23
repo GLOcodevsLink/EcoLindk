@@ -37,6 +37,14 @@ class BoxLogo extends StatelessWidget {
               color: Colors.black.withOpacity(0.05),
               blurRadius: 8,
               offset: const Offset(0, 3)),
+          // Halo coloré léger (vert de marque, ou la couleur passée) — plus
+          // de relief/éclat que la seule ombre noire (demande explicite :
+          // "les logos... doivent être plus beaux").
+          BoxShadow(
+              color: (color ?? AppColors.greenMid).withOpacity(0.22),
+              blurRadius: 14,
+              spreadRadius: -2,
+              offset: const Offset(0, 4)),
         ],
       ),
       child: Center(
@@ -201,80 +209,7 @@ class RequestStatusBadge extends StatelessWidget {
   }
 }
 
-/// Aperçu de position "carte" — tant qu'aucune vraie API de cartes n'est
-/// branchée (voir la suite du projet), affiche un pin sur un fond quadrillé
-/// stylisé plutôt qu'une fausse carte réaliste. Indique honnêtement quand la
-/// position est approximative (adresse tapée, pas de GPS réel — voir
-/// GeoHelper).
-class MiniMapPreview extends StatelessWidget {
-  final double latitude;
-  final double longitude;
-  final bool approximate;
-  final bool fr;
-  const MiniMapPreview({
-    super.key,
-    required this.latitude,
-    required this.longitude,
-    required this.approximate,
-    this.fr = true,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(16),
-      child: Container(
-        height: 150,
-        color: AppColors.inputFill,
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            CustomPaint(size: Size.infinite, painter: _GridPainter()),
-            Container(
-              width: 34,
-              height: 34,
-              alignment: Alignment.topCenter,
-              child: Icon(Icons.location_on, color: AppColors.greenDeep, size: 34),
-            ),
-            Positioned(
-              left: 8,
-              right: 8,
-              bottom: 8,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.6),
-                    borderRadius: BorderRadius.circular(8)),
-                child: Text(
-                  '${latitude.toStringAsFixed(5)}, ${longitude.toStringAsFixed(5)}'
-                  '${approximate ? "  •  ${fr ? "approximatif" : "approximate"}" : ""}',
-                  style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w700),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _GridPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = AppColors.line
-      ..strokeWidth = 1;
-    const step = 22.0;
-    for (double x = 0; x < size.width; x += step) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
-    }
-    for (double y = 0; y < size.height; y += step) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
+// MiniMapPreview a déménagé dans widgets/osm_map_preview.dart — c'est
+// désormais une vraie carte OpenStreetMap (flutter_map), plus un placeholder
+// quadrillé. Gardée dans un fichier séparé pour ne pas alourdir cet import
+// partagé avec la dépendance flutter_map/latlong2.
