@@ -1,190 +1,162 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:http/http.dart' as http;
-import '../core/env_config.dart';
+import 'dart:io';
+import 'dart:typed_data';
+import 'package:firebase_ai/firebase_ai.dart';
+import 'package:flutter/foundation.dart';
+import 'ai_model_settings.dart';
+import 'ai_prompts.dart';
 
 /// Un tour de conversation déjà échangé, pour renvoyer l'historique complet
-/// à chaque nouvel appel (l'API Gemini est sans état — voir [GeminiService.chat]).
+/// à chaque nouvel appel (le modèle est sans état — voir [GeminiService.chat]).
 class GeminiChatTurn {
   final bool fromUser;
   final String text;
   const GeminiChatTurn({required this.fromUser, required this.text});
 }
 
-
-/// Erreurs possibles d'un appel à l'API Gemini — code stable consommé par
-/// les écrans/services appelants (jamais le message brut de l'exception, qui
-/// pourrait un jour finir par fuiter des détails techniques à l'écran).
+/// Erreurs possibles d'un appel à l'IA — code stable consommé par les
+/// écrans (jamais le message brut de l'exception).
 class GeminiServiceException implements Exception {
-  final String code; // no-api-key | network | timeout | http-error | invalid-response
+  /// not-configured | rate-limited | network | timeout | http-error |
+  /// invalid-response
+  final String code;
   final String? detail;
   const GeminiServiceException(this.code, [this.detail]);
 
   @override
-  String toString() => 'GeminiServiceException($code)';
+  String toString() => 'GeminiServiceException($code${detail == null ? '' : ': $detail'})';
 }
 
-/// Unique point de contact avec l'API Gemini (texte ET image) — voir
-/// EnvConfig pour la clé (jamais codée en dur, jamais logguée ici même dans
-/// les messages d'erreur). Isolé dans ce service pour que ni l'UI
-/// (AiAssistantScreen) ni la logique métier (AiClassifier) n'aient à
-/// connaître le format de requête/réponse de l'API elle-même.
+/// Envoie une requête à un modèle Gemini et renvoie le texte produit.
+/// Injectable pour les tests ; par défaut, Firebase AI Logic.
+typedef GeminiGenerate = Future<String?> Function({
+  required String model,
+  Content? systemInstruction,
+  required List<Content> contents,
+  required GenerationConfig config,
+});
+
+/// Unique point de contact avec l'IA (texte ET image), via **Firebase AI
+/// Logic** (paquet `firebase_ai`, API Gemini Developer) : aucune clé d'API
+/// dans l'app ni aucun serveur à héberger, c'est le projet Firebase qui
+/// sert d'identifiant. Les modèles viennent de Remote Config (voir
+/// [AiModelSettings]) : le premier est essayé, puis le modèle de secours
+/// s'il est surchargé ou indisponible.
 class GeminiService {
-  GeminiService({http.Client? client}) : _client = client ?? http.Client();
+  GeminiService({GeminiGenerate? generate, List<String>? models})
+      : _generate = generate ?? _firebaseGenerate,
+        _models = models;
 
-  final http.Client _client;
+  final GeminiGenerate _generate;
+  final List<String>? _models;
 
-  // Modèle multimodal (texte + image), rapide et disponible en v1beta —
-  // même modèle pour la conversation et la classification d'images pour
-  // n'avoir qu'une seule intégration à maintenir.
-  // `gemini-2.5-flash` n'est plus proposé aux nouveaux projets Gemini.
-  // Le modèle Flash actuellement indiqué par l'API pour cette clé est 3.6.
-  static const _model = 'gemini-3.6-flash';
-  static const _baseUrl = 'https://generativelanguage.googleapis.com/v1beta/models';
-  static const _timeout = Duration(seconds: 30);
+  static const _timeout = Duration(seconds: 45);
 
-  Uri get _endpoint {
-    final key = EnvConfig.geminiApiKey;
-    return Uri.parse('$_baseUrl/$_model:generateContent?key=$key');
+  List<String> get _modelOrder {
+    final list = _models ?? [AiModelSettings.model, AiModelSettings.fallbackModel];
+    return list.where((m) => m.isNotEmpty).toSet().toList();
   }
 
-  /// Envoie l'historique + le nouveau message utilisateur, renvoie le texte
-  /// de la réponse du modèle. [systemInstruction] cadre le rôle de
-  /// l'assistant (voir AiAssistantScreen) sans jamais apparaître dans la
-  /// conversation visible à l'écran.
+  static Future<String?> _firebaseGenerate({
+    required String model,
+    Content? systemInstruction,
+    required List<Content> contents,
+    required GenerationConfig config,
+  }) async {
+    final generative = FirebaseAI.googleAI().generativeModel(
+      model: model,
+      systemInstruction: systemInstruction,
+      generationConfig: config,
+    );
+    final response = await generative.generateContent(contents);
+    return response.text;
+  }
+
+  /// Envoie l'historique + le nouveau message, renvoie la réponse. Les
+  /// consignes (sujets autorisés, rôle, langue) viennent de [AiPrompts].
   Future<String> chat({
     required List<GeminiChatTurn> history,
     required String message,
-    required String systemInstruction,
+    required bool forCollector,
+    required bool french,
   }) async {
-    if (!EnvConfig.hasGeminiApiKey) {
-      throw const GeminiServiceException('no-api-key');
-    }
-    final body = {
-      'systemInstruction': {
-        'parts': [
-          {'text': systemInstruction}
-        ]
-      },
-      'contents': [
-        ...history.map((t) => {
-              'role': t.fromUser ? 'user' : 'model',
-              'parts': [
-                {'text': t.text}
-              ],
-            }),
-        {
-          'role': 'user',
-          'parts': [
-            {'text': message}
-          ],
-        },
+    final text = await _run(
+      systemInstruction: Content.system(AiPrompts.assistant(forCollector: forCollector, french: french)),
+      contents: [
+        for (final t in history) t.fromUser ? Content.text(t.text) : Content.model([TextPart(t.text)]),
+        Content.text(message),
       ],
-      'generationConfig': {
-        'temperature': 0.6,
-        'maxOutputTokens': 512,
-      },
-    };
-
-    final json = await _post(body);
-    final text = _extractText(json);
-    if (text == null || text.trim().isEmpty) {
-      throw const GeminiServiceException('invalid-response');
-    }
+      // Les jetons de réflexion du modèle comptent dans cette limite.
+      config: GenerationConfig(temperature: 0.6, maxOutputTokens: 2048),
+    );
     return text.trim();
   }
 
-  /// Envoie une photo de déchet + consigne, demande une réponse JSON stricte
-  /// contenant la catégorie recyclable reconnue par EcoLindk et une
-  /// estimation de quantité. Ne renvoie JAMAIS de catégorie inventée : le
-  /// prompt liste explicitement les seules valeurs autorisées, et
-  /// [AiClassifier] retombe sur `unsupported` si le modèle sort de ce cadre.
+  /// Envoie une photo de déchet, renvoie le JSON produit par le modèle
+  /// (`category`, `confidence`, `estimatedWeightKg` — voir AiClassifier).
   Future<Map<String, dynamic>> classifyWasteImage({
     required List<int> imageBytes,
     required String mimeType,
-    required String prompt,
   }) async {
-    if (!EnvConfig.hasGeminiApiKey) {
-      throw const GeminiServiceException('no-api-key');
-    }
-    final body = {
-      'contents': [
-        {
-          'role': 'user',
-          'parts': [
-            {'text': prompt},
-            {
-              'inline_data': {
-                'mime_type': mimeType,
-                'data': base64Encode(imageBytes),
-              }
-            },
-          ],
-        },
+    final text = await _run(
+      contents: [
+        Content.multi([
+          TextPart(AiPrompts.classify),
+          InlineDataPart(mimeType, Uint8List.fromList(imageBytes)),
+        ]),
       ],
-      'generationConfig': {
-        'temperature': 0.2,
-        'maxOutputTokens': 256,
-        'responseMimeType': 'application/json',
-      },
-    };
-
-    final json = await _post(body);
-    final text = _extractText(json);
-    if (text == null || text.trim().isEmpty) {
-      throw const GeminiServiceException('invalid-response');
-    }
+      config: GenerationConfig(temperature: 0.2, maxOutputTokens: 1024, responseMimeType: 'application/json'),
+    );
     try {
       final decoded = jsonDecode(text);
       if (decoded is Map<String, dynamic>) return decoded;
-      throw const GeminiServiceException('invalid-response');
     } on FormatException {
-      throw const GeminiServiceException('invalid-response');
+      // Traité juste en dessous.
     }
+    throw const GeminiServiceException('invalid-response');
   }
 
-  Future<Map<String, dynamic>> _post(Map<String, dynamic> body) async {
-    http.Response response;
-    try {
-      response = await _client
-          .post(
-            _endpoint,
-            headers: const {'Content-Type': 'application/json'},
-            body: jsonEncode(body),
-          )
-          .timeout(_timeout);
-    } on TimeoutException {
-      throw const GeminiServiceException('timeout');
-    } catch (_) {
-      // Pas d'internet, DNS, hôte injoignable, etc. — jamais l'exception
-      // brute (pourrait contenir des détails techniques) dans l'UI.
-      throw const GeminiServiceException('network');
+  Future<String> _run({
+    Content? systemInstruction,
+    required List<Content> contents,
+    required GenerationConfig config,
+  }) async {
+    final models = _modelOrder;
+    if (models.isEmpty) throw const GeminiServiceException('not-configured');
+    GeminiServiceException? last;
+    for (final model in models) {
+      try {
+        final text = await _generate(
+          model: model,
+          systemInstruction: systemInstruction,
+          contents: contents,
+          config: config,
+        ).timeout(_timeout);
+        if (text == null || text.trim().isEmpty) throw const GeminiServiceException('invalid-response');
+        return text;
+      } catch (e) {
+        last = _map(e);
+        // Seules les indisponibilités du modèle justifient d'essayer le
+        // suivant ; une mauvaise configuration du projet échouerait pareil.
+        final tryNext = last.code == 'http-error' || last.code == 'rate-limited' || last.code == 'timeout';
+        debugPrint('Gemini ($model) : $e${tryNext ? ' — essai du modèle suivant' : ''}');
+        if (!tryNext) throw last;
+      }
     }
-
-    if (response.statusCode != 200) {
-      throw GeminiServiceException('http-error', 'status ${response.statusCode}');
-    }
-
-    try {
-      final decoded = jsonDecode(utf8.decode(response.bodyBytes));
-      if (decoded is Map<String, dynamic>) return decoded;
-      throw const GeminiServiceException('invalid-response');
-    } on FormatException {
-      throw const GeminiServiceException('invalid-response');
-    }
+    throw last!;
   }
 
-  String? _extractText(Map<String, dynamic> json) {
-    final candidates = json['candidates'];
-    if (candidates is! List || candidates.isEmpty) return null;
-    final content = candidates.first['content'];
-    if (content is! Map) return null;
-    final parts = content['parts'];
-    if (parts is! List || parts.isEmpty) return null;
-    final buffer = StringBuffer();
-    for (final part in parts) {
-      if (part is Map && part['text'] is String) buffer.write(part['text']);
-    }
-    return buffer.toString();
-  }
+  static GeminiServiceException _map(Object e) => switch (e) {
+        GeminiServiceException() => e,
+        ServiceApiNotEnabled() || InvalidApiKey() =>
+          GeminiServiceException('not-configured', e.toString()),
+        QuotaExceeded() => GeminiServiceException('rate-limited', e.toString()),
+        TimeoutException() => const GeminiServiceException('timeout'),
+        SocketException() => const GeminiServiceException('network'),
+        FirebaseAIException() || FirebaseAISdkException() => GeminiServiceException('http-error', e.toString()),
+        _ when e.toString().contains('SocketException') || e.toString().contains('ClientException') =>
+          const GeminiServiceException('network'),
+        _ => GeminiServiceException('http-error', e.toString()),
+      };
 }

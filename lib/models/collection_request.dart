@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:remixicon/remixicon.dart';
 
 /// Catégories de déchets recyclables reconnues par l'app (déclaration
 /// manuelle ou suggestion IA — voir [PostWasteScreen]).
@@ -15,10 +16,19 @@ extension WasteCategoryX on WasteCategory {
       };
 
   IconData get icon => switch (this) {
-        WasteCategory.plastic => Icons.local_drink_outlined,
-        WasteCategory.paperCardboard => Icons.inventory_2_outlined,
-        WasteCategory.glass => Icons.wine_bar_outlined,
-        WasteCategory.metal => Icons.settings_input_component_outlined,
+        WasteCategory.plastic => Icons.liquor_rounded, // bouteille
+        WasteCategory.paperCardboard => RemixIcons.box_3_fill, // carton
+        WasteCategory.glass => RemixIcons.goblet_fill,
+        WasteCategory.metal => RemixIcons.oil_fill, // bidon / canette
+      };
+
+  /// Exemples courts affichés sous le nom de la catégorie (formulaire de
+  /// post) pour aider à choisir.
+  String examples(bool fr) => switch (this) {
+        WasteCategory.plastic => fr ? "Bouteilles, bidons, emballages" : "Bottles, jugs, packaging",
+        WasteCategory.paperCardboard => fr ? "Cartons, journaux, papier" : "Boxes, newspapers, paper",
+        WasteCategory.glass => fr ? "Bouteilles, bocaux" : "Bottles, jars",
+        WasteCategory.metal => fr ? "Canettes, boîtes, alu" : "Cans, tins, aluminium",
       };
 
   /// Couleur d'accent propre à chaque catégorie — utilisée partout où une
@@ -31,8 +41,18 @@ extension WasteCategoryX on WasteCategory {
         WasteCategory.metal => const Color(0xFF7C5CBF), // violet acier
       };
 
+  /// Dégradé de l'icône de catégorie : de la couleur d'accent vers une
+  /// version plus claire, pour des pastilles moins plates.
+  LinearGradient get gradient => LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [Color.lerp(color, Colors.white, 0.28)!, color],
+      );
+
   static WasteCategory fromName(String? name) => WasteCategory.values
       .firstWhere((c) => c.name == name, orElse: () => WasteCategory.plastic);
+  static WasteCategory? tryFromName(String? name) =>
+      WasteCategory.values.where((c) => c.name == name).firstOrNull;
 }
 
 /// Cycle de vie d'une demande de collecte (voir règle métier : une demande
@@ -59,21 +79,38 @@ extension RequestStatusX on RequestStatus {
       .firstWhere((r) => r.name == name, orElse: () => RequestStatus.pending);
 }
 
-/// Bornes (kg) tolérées pour le poids réel saisi par le collecteur en fin de
-/// collecte, comparées à ce que le fournisseur a déclaré à la création du
-/// post (demande explicite : "the system checks that the weight is in a
-/// certain range as compared to what was previously entered by the waste
-/// provider"). Une seule source de vérité pour ces bornes — jamais
-/// redéfinies ailleurs.
-///
-/// [PostWasteScreen] ne propose plus de paliers fixes (demande explicite :
-/// "ça ne doit pas proposer à l'utilisateur, ça doit... laisser
-/// l'utilisateur entrer une approximation ou une quantité exacte") — la
-/// quantité est un nombre de kg tapé librement (ex. "3.5 kg"), stocké tel
-/// quel. Les bornes deviennent donc une tolérance de ±40 % autour de ce
-/// nombre plutôt qu'une fourchette fixe. Les 4 anciens paliers restent
-/// reconnus tels quels pour les demandes déjà postées avant ce changement.
+/// Écart maximal (kg) toléré entre le poids pesé par le collecteur en fin de
+/// collecte et le poids retenu au moment du post (demande explicite : "ça
+/// doit être dans un intervalle de 5, sinon le formulaire renvoie une erreur
+/// demandant au collecteur d'entrer le poids correct"). Bornes incluses :
+/// pour un post de 6 kg, tout poids entre 1 et 11 kg est accepté. Une seule
+/// source de vérité, utilisée par l'UI ET par
+/// CollectionService.submitCollectionResult. Les 4 anciens paliers restent
+/// reconnus tels quels pour les demandes postées avant la saisie libre.
+const double maxWeightDeviationKg = 5;
+
 extension QuantityRangeBounds on String {
+  /// Poids déclaré au post (kg), `null` pour un ancien palier ou un texte
+  /// illisible.
+  double? get declaredWeightKg {
+    if (const ['< 1 kg', '1 - 5 kg', '5 - 10 kg', '10+ kg'].contains(this)) return null;
+    final match = RegExp(r'(\d+(?:[.,]\d+)?)').firstMatch(this);
+    final value = match == null ? null : double.tryParse(match.group(1)!.replaceAll(',', '.'));
+    return (value == null || value <= 0) ? null : value;
+  }
+
+  /// Seule règle de validation du poids pesé par le collecteur — utilisée
+  /// par l'UI (CollectionConfirmationScreen) ET par
+  /// CollectionService.submitCollectionResult.
+  bool acceptsCollectedWeight(double weightKg) {
+    if (weightKg <= 0) return false;
+    final declared = declaredWeightKg;
+    // Petite marge pour les arrondis décimaux (6 - 1.0 ≠ 5 exactement).
+    if (declared != null) return (weightKg - declared).abs() <= maxWeightDeviationKg + 1e-9;
+    final (min, max) = weightBoundsKg;
+    return weightKg >= min && weightKg <= max;
+  }
+
   (double min, double max) get weightBoundsKg {
     switch (this) {
       case '< 1 kg':
@@ -85,10 +122,12 @@ extension QuantityRangeBounds on String {
       case '10+ kg':
         return (10, double.infinity);
     }
-    final match = RegExp(r'(\d+(?:[.,]\d+)?)').firstMatch(this);
-    final value = match == null ? null : double.tryParse(match.group(1)!.replaceAll(',', '.'));
-    if (value == null || value <= 0) return (0, double.infinity);
-    return (value * 0.6, value * 1.4);
+    final value = declaredWeightKg;
+    if (value == null) return (0, double.infinity);
+    return (
+      (value - maxWeightDeviationKg).clamp(0, double.infinity).toDouble(),
+      value + maxWeightDeviationKg
+    );
   }
 }
 
@@ -114,9 +153,25 @@ class CollectionRequest {
   final WasteCategory? aiSuggestedCategory;
   final double? aiConfidence;
 
+  /// Poids estimé par l'IA (kg), `null` si elle n'a pas pu l'estimer.
+  final double? aiEstimatedWeightKg;
+
+  /// Choix de l'utilisateur face au résultat de l'IA : `accepted` (les
+  /// valeurs de l'IA sont devenues celles du post), `refused` (il les a
+  /// corrigées) ou `unavailable` (analyse impossible, valeurs saisies à la
+  /// main). `null` pour les posts antérieurs à ce choix.
+  final String? aiDecision;
+
   final String address;
   final double latitude;
   final double longitude;
+
+  /// Quartier et ville du post, déduits de ses coordonnées par géocodage
+  /// inverse OpenStreetMap à la publication (voir CollectionService) —
+  /// affichés dans la notification des collecteurs et comparés à leurs
+  /// zones de collecte. `null` si inconnus.
+  final String? neighborhood;
+  final String? city;
 
   /// `true` si les coordonnées viennent du géocodage d'une adresse tapée
   /// (voir GeocodingService) plutôt que du GPS de l'appareil — affiché
@@ -136,6 +191,31 @@ class CollectionRequest {
   /// [rejectCollectionResult]).
   final double? pendingWeightKg;
   final double? pendingPriceFcfa;
+
+  /// `true` quand le Fournisseur vient de refuser le formulaire soumis —
+  /// l'écran Collecte du collecteur affiche alors une erreur l'invitant à le
+  /// remplir de nouveau. Remis à `false` à la soumission suivante.
+  final bool resultRejected;
+
+  /// Code aléatoire régénéré à chaque formulaire soumis par le collecteur et
+  /// inclus dans le QR code qu'il affiche (voir [qrPayload]). Le Fournisseur
+  /// n'accède au formulaire à accepter/refuser qu'en scannant ce QR (voir
+  /// ScanScreen) : impossible de confirmer à distance, sans la rencontre.
+  final String? scanCode;
+
+  /// Contenu du QR code affiché par le collecteur une fois son formulaire
+  /// soumis.
+  String get qrPayload => 'ecolindk:collection:$id:${scanCode ?? ''}';
+
+  /// Moment où le collecteur a tapé "Démarrer la collecte" (voir
+  /// CollectorCollectionScreen) — déclenche la demande de partage de
+  /// position au Fournisseur pour le suivi en temps réel.
+  final DateTime? collectionStartedAt;
+
+  /// Commission due par le collecteur pour cette collecte : poids confirmé ×
+  /// tarif de sa catégorie (voir RewardsConfig.commissionPerKgFcfa), figée
+  /// au moment de la double confirmation.
+  final double? commissionFcfa;
 
   /// Définitifs, écrits uniquement quand le fournisseur confirme — jamais
   /// par le collecteur directement (voir firestore.rules).
@@ -158,15 +238,23 @@ class CollectionRequest {
     required this.aiRequested,
     this.aiSuggestedCategory,
     this.aiConfidence,
+    this.aiEstimatedWeightKg,
+    this.aiDecision,
     required this.address,
     required this.latitude,
     required this.longitude,
+    this.neighborhood,
+    this.city,
     required this.locationIsApproximate,
     required this.status,
     this.collectorUid,
     this.collectorName,
     this.pendingWeightKg,
     this.pendingPriceFcfa,
+    this.resultRejected = false,
+    this.scanCode,
+    this.collectionStartedAt,
+    this.commissionFcfa,
     this.weightKg,
     this.valueFcfa,
     this.pointsEarned,
@@ -195,15 +283,23 @@ class CollectionRequest {
           ? null
           : WasteCategoryX.fromName(d['aiSuggestedCategory'] as String?),
       aiConfidence: (d['aiConfidence'] as num?)?.toDouble(),
+      aiEstimatedWeightKg: (d['aiEstimatedWeightKg'] as num?)?.toDouble(),
+      aiDecision: d['aiDecision'] as String?,
       address: d['address'] as String? ?? '',
       latitude: (d['latitude'] as num?)?.toDouble() ?? 0,
       longitude: (d['longitude'] as num?)?.toDouble() ?? 0,
+      neighborhood: d['neighborhood'] as String?,
+      city: d['city'] as String?,
       locationIsApproximate: d['locationIsApproximate'] as bool? ?? true,
       status: RequestStatusX.fromName(d['status'] as String?),
       collectorUid: d['collectorUid'] as String?,
       collectorName: d['collectorName'] as String?,
       pendingWeightKg: (d['pendingWeightKg'] as num?)?.toDouble(),
       pendingPriceFcfa: (d['pendingPriceFcfa'] as num?)?.toDouble(),
+      resultRejected: d['resultRejected'] as bool? ?? false,
+      scanCode: d['scanCode'] as String?,
+      collectionStartedAt: ts('collectionStartedAt'),
+      commissionFcfa: (d['commissionFcfa'] as num?)?.toDouble(),
       weightKg: (d['weightKg'] as num?)?.toDouble(),
       valueFcfa: (d['valueFcfa'] as num?)?.toDouble(),
       pointsEarned: (d['pointsEarned'] as num?)?.toInt(),
@@ -223,9 +319,13 @@ class CollectionRequest {
         'aiRequested': aiRequested,
         'aiSuggestedCategory': aiSuggestedCategory?.name,
         'aiConfidence': aiConfidence,
+        'aiEstimatedWeightKg': aiEstimatedWeightKg,
+        'aiDecision': aiDecision,
         'address': address,
         'latitude': latitude,
         'longitude': longitude,
+        'neighborhood': neighborhood,
+        'city': city,
         'locationIsApproximate': locationIsApproximate,
         'status': RequestStatus.pending.name,
         'collectorUid': null,

@@ -2,10 +2,15 @@ import 'package:flutter/material.dart';
 import '../../core/l10n/app_language.dart';
 import '../../core/theme.dart';
 import '../../models/app_notification.dart';
+import '../../models/collection_request.dart';
 import '../../services/auth_service.dart';
+import '../../services/collection_service.dart';
 import '../../services/notification_service.dart';
 import '../../widgets/decorative_leaves.dart';
 import '../../widgets/wp_common.dart';
+import '../collector/collector_collection_screen.dart';
+import '../collector/collector_request_preview_screen.dart';
+import 'request_status_screen.dart';
 
 /// Centre de notifications (voir NotificationService pour ce qui les
 /// déclenche — toujours un événement réel, jamais générées "pour faire
@@ -125,11 +130,49 @@ class _NotificationsCenterScreenState extends State<NotificationsCenterScreen> {
     );
   }
 
+  /// Ouvre ce dont parle la notification :
+  /// - nouveau post proche (Collecteur) : la fiche du post, pour l'accepter ;
+  /// - collecte en cours dont on est le collecteur : son écran Collecte ;
+  /// - sinon : le suivi de la demande (partagé par les deux rôles).
+  Future<void> _open(AppNotification n, bool fr, String uid) async {
+    if (!n.read) _notificationService.markRead(uid, n.id);
+    final id = n.relatedRequestId;
+    if (id == null) return;
+
+    CollectionRequest? request;
+    try {
+      request = await CollectionService().watchRequest(id).first;
+    } catch (_) {
+      request = null;
+    }
+    if (!mounted) return;
+    void snack(String fr0, String en) => ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(fr ? fr0 : en)));
+    if (request == null) {
+      snack("Cette demande n'est plus disponible.", "This request is no longer available.");
+      return;
+    }
+
+    final Widget screen;
+    if (n.type == NotificationType.newNearbyPost && request.collectorUid != uid) {
+      if (request.status != RequestStatus.pending) {
+        snack("Cette collecte a déjà été prise par un autre collecteur ou annulée.",
+            "This pickup was already taken by another collector or cancelled.");
+        return;
+      }
+      screen = CollectorRequestPreviewScreen(request: request);
+    } else if (request.collectorUid == uid &&
+        (request.status == RequestStatus.accepted || request.status == RequestStatus.inProgress)) {
+      screen = CollectorCollectionScreen(initialRequestId: request.id);
+    } else {
+      screen = RequestStatusScreen(requestId: request.id);
+    }
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => screen));
+  }
+
   Widget _notificationTile(AppNotification n, bool fr, String uid) {
     return InkWell(
-      onTap: () {
-        if (!n.read) _notificationService.markRead(uid, n.id);
-      },
+      onTap: () => _open(n, fr, uid),
       borderRadius: BorderRadius.circular(14),
       child: Container(
         margin: const EdgeInsets.only(bottom: 10),

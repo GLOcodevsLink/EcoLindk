@@ -20,10 +20,15 @@ extension VerificationStatusValue on VerificationStatus {
 /// Firestore associée (collection `users`, un document par uid).
 ///
 /// Flow d'inscription :
-/// 1. [registerAccount] crée le compte email/mot de passe et le document
-///    Firestore (sans rôle), avec le numéro de téléphone renseigné tel quel
-///    (aucune vérification par SMS n'est requise).
-/// 2. [completeHouseholdRegistration] ou [completeCollectorRegistration]
+/// 1. Le téléphone est confirmé par un code OTP **simulé** (voir
+///    SimulatedOtpService / OtpVerificationScreen).
+/// 2. [registerAccount] crée le compte email/mot de passe et le document
+///    Firestore (sans rôle), puis envoie l'email de vérification.
+/// 3. L'utilisateur clique sur le lien reçu (voir EmailVerificationScreen,
+///    [reloadEmailVerified]) avant de finaliser son rôle. Vérifications faites
+///    UNIQUEMENT à l'inscription : jamais à la connexion, et les comptes
+///    créés avant elles continuent de fonctionner tels quels.
+/// 4. [completeHouseholdRegistration] ou [completeCollectorRegistration]
 ///    fixe le rôle et finalise le compte.
 ///
 /// Flow de connexion (voir LoginScreen) : email+mot de passe, ou
@@ -157,10 +162,38 @@ class AuthService {
     return doc.data()?['email'] as String?;
   }
 
+  /// Envoie (ou renvoie) l'email de vérification standard de Firebase Auth,
+  /// rédigé dans la langue de l'app. Gratuit, sans plan Blaze : le lien
+  /// ouvre la page d'action hébergée par Firebase.
+  Future<void> sendEmailVerification({required bool french}) async {
+    final user = _auth.currentUser;
+    if (user == null) throw FirebaseAuthException(code: 'no-current-user');
+    await _auth.setLanguageCode(french ? 'fr' : 'en');
+    await user.sendEmailVerification();
+  }
+
+  /// Relit l'état du compte auprès de Firebase (le clic sur le lien se fait
+  /// hors de l'app) et renvoie `true` si l'email est désormais vérifié.
+  /// Force alors le renouvellement du jeton : c'est lui qui porte
+  /// `email_verified`, lu par les règles Firestore et par le serveur.
+  Future<bool> reloadEmailVerified() async {
+    final user = _auth.currentUser;
+    if (user == null) return false;
+    await user.reload();
+    final refreshed = _auth.currentUser;
+    if (refreshed == null || !refreshed.emailVerified) return false;
+    await refreshed.getIdToken(true);
+    return true;
+  }
+
   /// Crée le compte email/mot de passe puis la fiche Firestore associée
-  /// (rôle non défini pour l'instant, choisi juste après). Le numéro de
-  /// téléphone est enregistré tel qu'il a été saisi, sans vérification par
-  /// SMS.
+  /// (rôle non défini pour l'instant, choisi juste après), et envoie l'email
+  /// de vérification.
+  ///
+  /// [phoneVerified] : le numéro a été confirmé par le code OTP de
+  /// l'inscription. Ce code est pour l'instant **simulé** (voir
+  /// SimulatedOtpService), d'où `phoneVerificationMethod: 'simulated-otp'`,
+  /// à distinguer plus tard d'une vraie vérification par SMS.
   Future<UserCredential> registerAccount({
     required String email,
     required String password,
@@ -168,6 +201,8 @@ class AuthService {
     required String lastName,
     required String address,
     required String phoneNumber,
+    bool phoneVerified = false,
+    bool french = true,
     String? referredBy,
   }) async {
     final credential = await _auth.createUserWithEmailAndPassword(
@@ -182,6 +217,8 @@ class AuthService {
       'fullName': '${firstName.trim()} ${lastName.trim()}',
       'address': address.trim(),
       'phone': phoneNumber,
+      'phoneVerified': phoneVerified,
+      'phoneVerificationMethod': phoneVerified ? 'simulated-otp' : null,
       'role': null,
       'verificationStatus': null,
       // Uid du parrain (voir ReferralService) — `null` si aucun code de
@@ -191,8 +228,18 @@ class AuthService {
     });
 
     if (phoneNumber.trim().isNotEmpty) {
-      await _phoneLookup.doc(phoneNumber.trim()).set({'email': email.trim()});
+      // L'email tel que Firebase l'a enregistré (normalisé), celui que
+      // firestore.rules compare au jeton.
+      await _phoneLookup
+          .doc(phoneNumber.trim())
+          .set({'email': credential.user!.email ?? email.trim()});
     }
+
+    // Best-effort : si l'envoi échoue (réseau, quota), l'écran de
+    // vérification propose de le renvoyer — le compte, lui, est créé.
+    try {
+      await sendEmailVerification(french: french);
+    } catch (_) {}
 
     return credential;
   }
@@ -209,16 +256,17 @@ class AuthService {
   /// Ménage (demande explicite : "il ne devrait pas avoir ça [la validation
   /// admin], il crée juste son compte et puis c'est tout — lorsqu'il crée il
   /// peut tout faire ce qui le concerne").
+  ///
+  /// Les zones de collecte s'enregistrent juste après, via
+  /// CollectorZoneService (voir CollectorSetupScreen).
   Future<void> completeCollectorRegistration(
     String uid, {
-    required String collectionZone,
     required WorkStatus workStatus,
     String? companyName,
   }) {
     return _users.doc(uid).update({
       'role': UserRole.collector.name,
       'verificationStatus': VerificationStatus.verified.value,
-      'collectionZone': collectionZone.trim(),
       'workStatus': workStatus.name,
       'companyName': (companyName == null || companyName.trim().isEmpty)
           ? null

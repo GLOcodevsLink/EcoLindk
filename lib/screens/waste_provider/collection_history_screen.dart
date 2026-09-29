@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../widgets/waste_photo_image.dart';
 import '../../core/l10n/app_language.dart';
 import '../../core/theme.dart';
 import '../../models/collection_request.dart';
@@ -117,7 +118,7 @@ class CollectionHistoryScreen extends StatelessWidget {
               child: r.imageUrl.isEmpty
                   ? Container(
                       width: 48, height: 48, color: AppColors.inputFill, child: Icon(r.category.icon, color: AppColors.greenMid))
-                  : Image.network(r.imageUrl, width: 48, height: 48, fit: BoxFit.cover),
+                  : WastePhotoImage(url: r.imageUrl, width: 48, height: 48, fit: BoxFit.cover),
             ),
             const SizedBox(width: 12),
             Expanded(

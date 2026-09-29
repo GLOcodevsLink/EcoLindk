@@ -29,15 +29,19 @@ class NotificationService {
     required String title,
     required String body,
     String? relatedRequestId,
+    String? id,
   }) {
-    return _items(uid).add({
+    final data = {
       'type': type.name,
       'title': title,
       'body': body,
       'read': false,
       'relatedRequestId': relatedRequestId,
       'createdAt': FieldValue.serverTimestamp(),
-    });
+    };
+    // [id] fixe = au plus UNE notification pour cet événement : une seconde
+    // écriture serait une modification, refusée par firestore.rules.
+    return id == null ? _items(uid).add(data) : _items(uid).doc(id).set(data);
   }
 
   Stream<List<AppNotification>> watch(String uid) => _items(uid)

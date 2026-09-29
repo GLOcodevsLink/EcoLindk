@@ -3,8 +3,7 @@ import 'package:flutter/material.dart';
 import '../core/theme.dart';
 import '../models/user_role.dart';
 import '../services/auth_service.dart';
-import '../services/collection_service.dart';
-import '../services/geocoding_service.dart';
+import 'collector/collection_zones_screen.dart';
 import '../widgets/decorative_leaves.dart';
 import '../widgets/gradient_pill_button.dart';
 import '../core/l10n/app_language.dart';
@@ -12,8 +11,10 @@ import '../core/l10n/strings.dart';
 
 /// Modification du profil, ouverte en tapant l'avatar sur SettingsScreen.
 ///
-/// Modifiable : prénom, nom, et adresse (Ménage) ou zone de collecte /
-/// entreprise (Collecteur). Email et téléphone sont affichés en lecture
+/// Modifiable : prénom, nom, et adresse facultative (Ménage) ou entreprise
+/// (Collecteur) ; les zones de collecte du Collecteur se gèrent sur leur
+/// propre écran (voir CollectionZonesScreen), enregistré à chaque
+/// changement. Email et téléphone sont affichés en lecture
 /// seule : les changer nécessiterait une re-vérification côté Firebase Auth
 /// (email) ou une ré-indexation de `phone_lookup` (téléphone), hors scope
 /// actuel.
@@ -32,7 +33,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
   final _firstNameController = TextEditingController();
   final _lastNameController = TextEditingController();
   final _addressController = TextEditingController();
-  final _collectionZoneController = TextEditingController();
   final _companyNameController = TextEditingController();
 
   UserRole _role = UserRole.household;
@@ -54,7 +54,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _firstNameController.dispose();
     _lastNameController.dispose();
     _addressController.dispose();
-    _collectionZoneController.dispose();
     _companyNameController.dispose();
     super.dispose();
   }
@@ -68,7 +67,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _firstNameController.text = (data['firstName'] as String?) ?? '';
     _lastNameController.text = (data['lastName'] as String?) ?? '';
     _addressController.text = (data['address'] as String?) ?? '';
-    _collectionZoneController.text = (data['collectionZone'] as String?) ?? '';
     _companyNameController.text = (data['companyName'] as String?) ?? '';
     _role = (data['role'] as String?) == UserRole.collector.name
         ? UserRole.collector
@@ -93,18 +91,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
     if (_role == UserRole.household) {
       fields['address'] = _addressController.text.trim();
     } else {
-      fields['collectionZone'] = _collectionZoneController.text.trim();
       final company = _companyNameController.text.trim();
       fields['companyName'] = company.isEmpty ? null : company;
     }
 
     try {
       await _authService.updateProfileFields(uid, fields);
-      // Re-géocode le point de référence du collecteur si sa zone a changé —
-      // best-effort, voir CollectorSetupScreen (même logique à la création).
-      if (_role == UserRole.collector) {
-        await _geocodeAndSaveLocation(uid);
-      }
       if (!mounted) return;
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text(s.profileUpdated)));
@@ -115,15 +107,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
           .showSnackBar(SnackBar(content: Text(s.authError('unknown'))));
     } finally {
       if (mounted) setState(() => _isSaving = false);
-    }
-  }
-
-  Future<void> _geocodeAndSaveLocation(String uid) async {
-    try {
-      final result = await GeocodingService().geocode(_collectionZoneController.text);
-      await CollectionService().setCollectorLocation(uid, result.latitude, result.longitude);
-    } catch (_) {
-      // Silencieux — voir CollectorSetupScreen._geocodeAndSaveLocation.
     }
   }
 
@@ -213,10 +196,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   _readOnlyField(s.phoneLabel, _phone, Icons.phone_outlined),
                   const SizedBox(height: 12),
                   if (_role == UserRole.household)
-                    _field(_addressController, s.address, Icons.home_outlined)
+                    // Facultative : l'inscription ne la demande plus, chaque
+                    // post a sa propre adresse (GPS ou tapée).
+                    _field(_addressController, s.address, Icons.home_outlined, required: false)
                   else ...[
-                    _field(_collectionZoneController, s.collectionZone,
-                        Icons.location_on_outlined),
+                    _zonesTile(),
                     const SizedBox(height: 12),
                     _field(_companyNameController, s.companyNameOptional,
                         Icons.apartment_outlined,
@@ -234,6 +218,39 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  /// Accès à "Mes zones de collecte" (Collecteur).
+  Widget _zonesTile() {
+    final fr = appLanguage.value == AppLanguage.fr;
+    return Material(
+      color: AppColors.card,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: () => Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const CollectionZonesScreen()),
+        ),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: AppColors.line, width: 1.2),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.location_on_outlined, size: 19, color: AppColors.greenMid),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(fr ? "Mes zones de collecte" : "My collection zones",
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: AppColors.mainText)),
+              ),
+              Icon(Icons.chevron_right_rounded, color: AppColors.textGray),
+            ],
+          ),
+        ),
       ),
     );
   }

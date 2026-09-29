@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../core/l10n/app_language.dart';
 import '../../core/rewards_config.dart';
 import '../../core/theme.dart';
+import '../../models/collection_request.dart';
 import '../../widgets/decorative_leaves.dart';
 import '../../widgets/wp_common.dart';
 
@@ -334,12 +335,23 @@ class ConversionRatesScreen extends StatelessWidget {
           BoxLogo(m.icon, size: 36),
           const SizedBox(width: 12),
           Expanded(
-              child: Text(m.label(fr),
-                  style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w800, color: AppColors.greenDeep))),
-          Text(
-              fr
-                  ? "${_fmtPts(m.pointsPerKg)} P/Kg"
-                  : "${_fmtPts(m.pointsPerKg)} P/Kg",
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(m.label(fr),
+                    style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w800, color: AppColors.greenDeep)),
+                // Ligne dont le taux est crédité pour les posts de cette
+                // catégorie (voir RewardsConfig.pointsPerKg).
+                if (m.creditedCategory != null)
+                  Text(
+                      fr
+                          ? "Taux appliqué aux posts « ${m.creditedCategory!.label(true)} »"
+                          : "Rate applied to \"${m.creditedCategory!.label(false)}\" posts",
+                      style: TextStyle(fontSize: 11, color: AppColors.textGray)),
+              ],
+            ),
+          ),
+          Text("${_fmtPts(m.pointsPerKg)} P/Kg",
               style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: AppColors.mainText)),
         ],
       ),
@@ -391,6 +403,70 @@ class PriceListScreen extends StatelessWidget {
                       ),
                     ))
                 .toList(),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Tarifs de commission du Collecteur (Réglages du Collecteur) : FCFA
+/// prélevés par kg collecté et confirmé, selon la catégorie — lus depuis
+/// [RewardsConfig.commissionPerKgFcfa], le même barème que celui utilisé
+/// par CollectionService.confirmCollectionResult pour calculer la
+/// commission de chaque collecte (poids confirmé × tarif).
+class CommissionRatesScreen extends StatelessWidget {
+  const CommissionRatesScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<AppLanguage>(
+      valueListenable: appLanguage,
+      builder: (context, lang, _) {
+        final fr = lang == AppLanguage.fr;
+        return _InfoScaffold(
+          title: fr ? "Tarifs de commission" : "Commission rates",
+          child: ListView(
+            padding: const EdgeInsets.only(top: 12, bottom: 20),
+            children: [
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: AppColors.inputFill,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Text(
+                  fr
+                      ? "Pour chaque collecte confirmée par vous et le fournisseur, la commission est calculée automatiquement : poids collecté × tarif de la catégorie."
+                      : "For every collection confirmed by you and the supplier, the commission is calculated automatically: weight collected × the category's rate.",
+                  style: TextStyle(fontSize: 12, color: AppColors.textGray, height: 1.4),
+                ),
+              ),
+              const SizedBox(height: 14),
+              ...RewardsConfig.commissionPerKgFcfa.entries.map((e) => Container(
+                    margin: const EdgeInsets.only(bottom: 10),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: AppColors.card,
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: AppColors.line, width: 1.2),
+                    ),
+                    child: Row(
+                      children: [
+                        BoxLogo(e.key.icon, size: 36),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(e.key.label(fr),
+                              style: TextStyle(
+                                  fontSize: 13.5, fontWeight: FontWeight.w800, color: AppColors.greenDeep)),
+                        ),
+                        Text("${e.value.toStringAsFixed(0)} FCFA/Kg",
+                            style: TextStyle(
+                                fontSize: 13, fontWeight: FontWeight.w800, color: AppColors.mainText)),
+                      ],
+                    ),
+                  )),
+            ],
           ),
         );
       },

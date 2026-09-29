@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../widgets/waste_photo_image.dart';
 import '../../core/l10n/app_language.dart';
 import '../../core/theme.dart';
 import '../../models/collection_request.dart';
@@ -128,7 +129,7 @@ class _CollectorRequestPreviewScreenState
                                           color: AppColors.inputFill,
                                           child: Icon(r.category.icon,
                                               size: 40, color: AppColors.greenMid))
-                                      : Image.network(r.imageUrl,
+                                      : WastePhotoImage(url: r.imageUrl,
                                           height: 180, width: double.infinity, fit: BoxFit.cover),
                                 ),
                                 const SizedBox(height: 16),
@@ -146,7 +147,7 @@ class _CollectorRequestPreviewScreenState
                                             r.quantityRange, Icons.scale_outlined)),
                                     const SizedBox(width: 10),
                                     Expanded(
-                                        child: _infoTile(fr ? "Fournisseur" : "Provider",
+                                        child: _infoTile(fr ? "Fournisseur" : "Supplier",
                                             r.householdName.isEmpty ? '—' : r.householdName,
                                             Icons.person_outline)),
                                   ],

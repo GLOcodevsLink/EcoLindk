@@ -1,31 +1,37 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:remixicon/remixicon.dart';
 import '../../core/l10n/app_language.dart';
+import '../../core/rewards_config.dart';
 import '../../core/theme.dart';
 import '../../models/collection_request.dart';
 import '../../services/ai_classifier.dart';
 import '../../services/auth_service.dart';
 import '../../services/collection_service.dart';
-import '../../services/stockimg_client.dart';
+import '../../services/waste_photo_service.dart';
 import '../../services/geo_helper.dart';
 import '../../services/geocoding_service.dart';
 import '../../widgets/decorative_leaves.dart';
 import '../../widgets/gradient_pill_button.dart';
 import '../../widgets/osm_map_preview.dart';
+import '../../widgets/waste_category_picker.dart';
 import '../../widgets/wp_common.dart';
 import 'request_status_screen.dart';
 
-/// Flux de déclaration d'un déchet, en 4 étapes :
-/// 0. Photo
-/// 1. Description, catégorie, quantité
-/// 2. Analyse IA (optionnelle, voir AiClassifier — un assistant, jamais une
-///    vérité : l'utilisateur confirme ou corrige toujours la suggestion)
-/// 3. Adresse (GPS réel ou adresse tapée — voir GeoHelper) puis récapitulatif
-///    et envoi.
+/// Poster un déchet, en 3 étapes :
+/// 0. **Votre déchet** — photo et description OBLIGATOIRES ; catégorie et
+///    poids FACULTATIFS (l'utilisateur peut laisser l'IA décider).
+/// 1. **Analyse IA** (voir AiClassifier) — le résultat s'affiche avec
+///    "Accepter" (les valeurs de l'IA deviennent automatiquement celles du
+///    post) ou "Refuser" (l'utilisateur corrige les valeurs proposées, et ce
+///    sont ses corrections qui sont enregistrées). Si l'analyse échoue, il
+///    peut réessayer ou continuer avec ses propres valeurs.
+/// 2. **Adresse et envoi** — GPS réel ou adresse tapée (voir GeoHelper),
+///    récapitulatif, envoi.
 class PostWasteScreen extends StatefulWidget {
   const PostWasteScreen({super.key});
 
@@ -33,8 +39,9 @@ class PostWasteScreen extends StatefulWidget {
   State<PostWasteScreen> createState() => _PostWasteScreenState();
 }
 
+enum _AiDecision { none, accepted, refused, unavailable }
+
 class _PostWasteScreenState extends State<PostWasteScreen> {
-  static const _totalSteps = 4;
   int _step = 0;
 
   final _authService = AuthService();
@@ -42,25 +49,34 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
   final _geocodingService = GeocodingService();
   final _descriptionCtrl = TextEditingController();
   final _addressCtrl = TextEditingController();
-  final _quantityCtrl = TextEditingController();
 
+  // Étape 0 — saisie initiale (catégorie/poids facultatifs).
   File? _imageFile;
-  String? _imageError;
 
-  WasteCategory? _category;
+  /// Version compressée de la photo (voir WastePhotoService.compress),
+  /// préparée en arrière-plan DÈS le choix de la photo, puis réutilisée pour
+  /// l'analyse IA et pour l'enregistrement : une seule compression, et
+  /// quelques centaines de Ko à envoyer au lieu de plusieurs Mo.
+  Future<Uint8List>? _compressed;
+  int? _compressedSize; // `null` tant que la compression est en cours
+  WasteCategory? _userCategory;
+  final _userWeightCtrl = TextEditingController();
+  bool _triedStep0 = false;
 
-  /// Aucun clavier physique/tactile ni webcam de "vraie" caméra n'existe sur
-  /// Linux/Windows via `image_picker` (pas d'implémentation fédérée pour ces
-  /// plateformes) — le bouton "Caméra" y serait un bouton mort qui échoue en
-  /// silence. Masqué sur desktop plutôt que simulé.
-  bool get _isDesktop =>
-      !kIsWeb && (Platform.isLinux || Platform.isWindows || Platform.isMacOS);
-
-  bool _useAi = false;
+  // Étape 1 — IA puis valeurs retenues pour le post.
   bool _aiRunning = false;
   AiClassificationResult? _aiResult;
   String? _aiError;
+  _AiDecision _decision = _AiDecision.none;
+  WasteCategory? _finalCategory;
+  final _finalWeightCtrl = TextEditingController();
 
+  /// Résultat accepté mais sans poids (ni estimé par l'IA, ni saisi avant) :
+  /// on le demande. Figé au moment d'accepter, pour que le champ ne
+  /// disparaisse pas dès le premier chiffre tapé.
+  bool _askWeight = false;
+
+  // Étape 2 — adresse.
   bool _useGps = true;
   ResolvedLocation? _location;
   bool _locating = false;
@@ -70,106 +86,115 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
   bool _submitting = false;
   String? _submitError;
 
+  /// Pas de caméra via `image_picker` sur Linux/Windows/macOS : bouton masqué
+  /// plutôt que laissé inerte.
+  bool get _isDesktop => !kIsWeb && (Platform.isLinux || Platform.isWindows || Platform.isMacOS);
+
   @override
   void dispose() {
     _descriptionCtrl.dispose();
     _addressCtrl.dispose();
-    _quantityCtrl.dispose();
+    _userWeightCtrl.dispose();
+    _finalWeightCtrl.dispose();
     super.dispose();
   }
 
-  bool _fr(BuildContext context) => appLanguage.value == AppLanguage.fr;
+  bool get _fr => appLanguage.value == AppLanguage.fr;
 
-  /// Quantité tapée par l'utilisateur (kg) — `null` si vide ou non numérique
-  /// (voir [_canGoNext]/[_submit], qui bloquent toujours avant Firestore si
-  /// c'est le cas : demande explicite "le système vérifie toujours les
-  /// entrées de l'utilisateur avant de poursuivre").
-  double? get _parsedQuantityKg =>
-      double.tryParse(_quantityCtrl.text.trim().replaceAll(',', '.'));
+  static double? _parseKg(TextEditingController c) {
+    final v = double.tryParse(c.text.trim().replaceAll(',', '.'));
+    return (v == null || v <= 0) ? null : v;
+  }
 
-  String _formatQtyNumber(double v) =>
-      v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(1);
-  String _formatQtyKg(double v) => '${_formatQtyNumber(v)} kg';
+  static String _fmtNumber(double v) => v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(1);
+  static String _fmtKg(double v) => '${_fmtNumber(v)} kg';
 
-  Future<void> _pickImage(ImageSource source) async {
-    try {
-      final picked = await ImagePicker().pickImage(
-          source: source, imageQuality: 85, maxWidth: 2048, maxHeight: 2048);
-      if (picked == null) return; // annulé par l'utilisateur, pas une erreur
+  void _snack(String message) =>
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+
+  // ---------------------------------------------------------------- photo
+  void _setImage(File file) {
+    final compressed = file.readAsBytes().then(WastePhotoService.compress);
+    setState(() {
+      _imageFile = file;
+      _compressed = compressed;
+      _compressedSize = null;
+      // Nouvelle photo : l'ancienne analyse ne vaut plus rien.
+      _aiResult = null;
+      _aiError = null;
+      _decision = _AiDecision.none;
+    });
+    compressed.then((jpeg) {
+      if (mounted && _compressed == compressed) setState(() => _compressedSize = jpeg.length);
+    }, onError: (Object e) {
+      if (!mounted || _compressed != compressed) return;
       setState(() {
-        _imageFile = File(picked.path);
-        _imageError = null;
-        _aiResult = null;
+        _imageFile = null;
+        _compressed = null;
       });
+      _snack(e is WastePhotoException && e.code == 'too-large'
+          ? (_fr ? "Photo trop lourde, même compressée. Choisissez-en une autre." : "Photo too heavy, even compressed. Pick another one.")
+          : (_fr ? "Photo illisible. Choisissez une autre image (JPEG, PNG ou WEBP)." : "Unreadable photo. Pick another image (JPEG, PNG or WEBP)."));
+    });
+  }
+
+  Future<void> _pickFromCamera() async {
+    try {
+      final picked = await ImagePicker()
+          .pickImage(source: ImageSource.camera, imageQuality: 85, maxWidth: 2048, maxHeight: 2048);
+      if (picked != null) _setImage(File(picked.path));
     } catch (_) {
-      setState(() => _imageError =
-          _fr(context) ? "Image invalide. Réessayez." : "Invalid image. Please try again.");
+      _snack(_fr ? "Image invalide. Réessayez." : "Invalid image. Please try again.");
     }
   }
 
-  /// Ouvre le vrai sélecteur de fichiers du système (demande explicite : "la
-  /// galerie doit ouvrir l'espace fichier de la machine") — `image_picker`
-  /// n'a pas d'implémentation Linux/Windows (bouton mort sur desktop) ;
-  /// `file_selector` est le plugin officiel Flutter avec un vrai panneau
-  /// natif sur TOUTES les plateformes (Explorateur de fichiers/Finder/
-  /// sélecteur Android inclus), donc utilisé ici pour "Galerie" partout.
-  Future<void> _pickImageFromFiles() async {
+  /// Vrai sélecteur de fichiers du système sur toutes les plateformes
+  /// (`image_picker` n'a pas de galerie sur desktop).
+  Future<void> _pickFromFiles() async {
     try {
-      const typeGroup = XTypeGroup(
-        label: 'images',
-        // Formats acceptés par StockImg (pas de HEIC).
-        extensions: ['jpg', 'jpeg', 'png', 'webp'],
-      );
+      const typeGroup = XTypeGroup(label: 'images', extensions: ['jpg', 'jpeg', 'png', 'webp']);
       final picked = await openFile(acceptedTypeGroups: [typeGroup]);
-      if (picked == null) return; // annulé par l'utilisateur, pas une erreur
-      setState(() {
-        _imageFile = File(picked.path);
-        _imageError = null;
-        _aiResult = null;
-      });
+      if (picked != null) _setImage(File(picked.path));
     } catch (_) {
-      setState(() => _imageError =
-          _fr(context) ? "Image invalide. Réessayez." : "Invalid image. Please try again.");
+      _snack(_fr ? "Image invalide. Réessayez." : "Invalid image. Please try again.");
     }
   }
 
-  bool _canGoNext(bool fr) {
-    switch (_step) {
-      case 0:
-        if (_imageFile == null) {
-          setState(() => _imageError = fr ? "Ajoutez une photo pour continuer." : "Add a photo to continue.");
-          return false;
-        }
-        return true;
-      case 1:
-        if (_category == null || _descriptionCtrl.text.trim().isEmpty) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text(fr ? "Complétez tous les champs." : "Fill in all the fields.")));
-          return false;
-        }
-        final qty = _parsedQuantityKg;
-        if (qty == null || qty <= 0) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text(fr
-                  ? "Entrez une quantité valide, en kilogrammes."
-                  : "Enter a valid quantity, in kilograms.")));
-          return false;
-        }
-        return true;
-      case 2:
-        return true; // l'IA est optionnelle
-      default:
-        return true;
+  // ---------------------------------------------------------------- étapes
+  bool get _userWeightInvalid => _userWeightCtrl.text.trim().isNotEmpty && _parseKg(_userWeightCtrl) == null;
+
+  void _goToAnalysis() {
+    setState(() => _triedStep0 = true);
+    if (_imageFile == null || _descriptionCtrl.text.trim().isEmpty) {
+      _snack(_fr
+          ? "Ajoutez une photo et une description avant l'analyse."
+          : "Add a photo and a description before the analysis.");
+      return;
     }
+    if (_userWeightInvalid) {
+      _snack(_fr ? "Le poids doit être un nombre de kg." : "The weight must be a number of kg.");
+      return;
+    }
+    setState(() => _step = 1);
+    if (_aiResult == null && !_aiRunning) _runAi();
   }
 
   Future<void> _runAi() async {
     setState(() {
       _aiRunning = true;
       _aiError = null;
+      _decision = _AiDecision.none;
     });
     try {
-      final result = await AiClassifier.classify(_imageFile?.path);
+      final compressed = _compressed;
+      if (compressed == null) throw const AiClassificationException('no-image');
+      final Uint8List jpeg;
+      try {
+        jpeg = await compressed;
+      } catch (_) {
+        throw const AiClassificationException('invalid-image');
+      }
+      final result = await AiClassifier.classifyBytes(jpeg, 'image/jpeg');
       if (!mounted) return;
       setState(() {
         _aiResult = result;
@@ -179,32 +204,88 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
       if (!mounted) return;
       setState(() {
         _aiRunning = false;
-        _aiError = _aiErrorMessage(e.code, _fr(context));
+        _aiError = _aiErrorMessage(e.code, _fr);
       });
     } catch (_) {
       if (!mounted) return;
       setState(() {
         _aiRunning = false;
-        _aiError = _fr(context) ? "Échec de l'analyse. Réessayez." : "Analysis failed. Please retry.";
+        _aiError = _fr ? "Échec de l'analyse. Réessayez." : "Analysis failed. Please retry.";
       });
     }
   }
 
-  String _aiErrorMessage(String code, bool fr) {
-    switch (code) {
-      case 'no-image':
-        return fr ? "Aucune image à analyser." : "No image to analyze.";
-      case 'invalid-image':
-        return fr ? "Image invalide." : "Invalid image.";
-      case 'unsupported':
-        return fr ? "Ce type de déchet n'est pas reconnu." : "This waste type isn't recognized.";
-      case 'network':
-        return fr ? "Problème de connexion réseau." : "Network connection problem.";
-      default:
-        return fr ? "Échec de la classification." : "Classification failed.";
+  String _aiErrorMessage(String code, bool fr) => switch (code) {
+        'no-image' => fr ? "Aucune image à analyser." : "No image to analyze.",
+        'invalid-image' => fr ? "Image invalide." : "Invalid image.",
+        'unsupported' => fr
+            ? "L'IA ne reconnaît pas de déchet recyclable sur cette photo."
+            : "The AI doesn't recognize recyclable waste in this photo.",
+        'network' => fr ? "Problème de connexion réseau." : "Network connection problem.",
+        'not-configured' => fr
+            ? "L'IA n'est pas encore activée dans le projet Firebase (Firebase AI Logic)."
+            : "AI isn't enabled in the Firebase project yet (Firebase AI Logic).",
+        _ => fr ? "Échec de l'analyse." : "Analysis failed.",
+      };
+
+  /// Accepter : les valeurs de l'IA deviennent celles du post. Si l'IA n'a
+  /// pas estimé le poids, on garde celui saisi par l'utilisateur (sinon il
+  /// devra l'indiquer).
+  void _accept() {
+    final ai = _aiResult!;
+    setState(() {
+      _decision = _AiDecision.accepted;
+      _finalCategory = ai.category;
+      final w = ai.estimatedWeightKg ?? _parseKg(_userWeightCtrl);
+      _finalWeightCtrl.text = w == null ? '' : _fmtNumber(w);
+      _askWeight = w == null;
+    });
+  }
+
+  /// Refuser : formulaire de correction prérempli avec les valeurs de l'IA.
+  void _refuse() {
+    final ai = _aiResult!;
+    setState(() {
+      _decision = _AiDecision.refused;
+      _finalCategory = ai.category;
+      final w = ai.estimatedWeightKg ?? _parseKg(_userWeightCtrl);
+      _finalWeightCtrl.text = w == null ? '' : _fmtNumber(w);
+    });
+  }
+
+  /// Analyse impossible : l'utilisateur continue avec ses propres valeurs.
+  void _continueWithoutAi() {
+    setState(() {
+      _decision = _AiDecision.unavailable;
+      _finalCategory = _userCategory;
+      final w = _parseKg(_userWeightCtrl);
+      _finalWeightCtrl.text = w == null ? '' : _fmtNumber(w);
+    });
+  }
+
+  void _goToAddress() {
+    if (_decision == _AiDecision.none) {
+      _snack(_fr ? "Acceptez ou refusez le résultat de l'IA." : "Accept or reject the AI result.");
+      return;
+    }
+    if (_finalCategory == null || _parseKg(_finalWeightCtrl) == null) {
+      _snack(_fr
+          ? "Choisissez une catégorie et indiquez le poids, en kg."
+          : "Choose a category and enter the weight, in kg.");
+      return;
+    }
+    setState(() => _step = 2);
+  }
+
+  void _back() {
+    if (_step == 0) {
+      Navigator.of(context).pop();
+    } else {
+      setState(() => _step -= 1);
     }
   }
 
+  // ---------------------------------------------------------------- adresse
   Future<void> _useDeviceGps() async {
     setState(() {
       _locating = true;
@@ -212,18 +293,18 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
     });
     final (location, result) = await GeoHelper.currentDeviceLocation();
     if (!mounted) return;
+    final fr = _fr;
     if (location == null) {
       setState(() {
         _locating = false;
         _locationError = switch (result) {
-          LocationPermissionResult.deniedOnce =>
-            _fr(context) ? "Permission de localisation refusée." : "Location permission denied.",
-          LocationPermissionResult.deniedForever => _fr(context)
+          LocationPermissionResult.deniedOnce => fr ? "Permission de localisation refusée." : "Location permission denied.",
+          LocationPermissionResult.deniedForever => fr
               ? "Localisation bloquée — activez-la dans les réglages du téléphone."
               : "Location blocked — enable it in your phone settings.",
           LocationPermissionResult.serviceDisabled =>
-            _fr(context) ? "Le GPS est désactivé sur cet appareil." : "GPS is turned off on this device.",
-          _ => _fr(context) ? "Impossible d'obtenir la position." : "Couldn't get your location.",
+            fr ? "Le GPS est désactivé sur cet appareil." : "GPS is turned off on this device.",
+          _ => fr ? "Impossible d'obtenir la position." : "Couldn't get your location.",
         };
       });
       return;
@@ -231,18 +312,13 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
     setState(() {
       _location = location;
       _locating = false;
-      _addressCtrl.text = _fr(context)
-          ? "Position actuelle (GPS)"
-          : "Current location (GPS)";
+      _addressCtrl.text = fr ? "Position actuelle (GPS)" : "Current location (GPS)";
     });
   }
 
-  /// Géocode l'adresse tapée via Nominatim (voir GeocodingService) — UNE
-  /// SEULE fois, au tap sur "Localiser cette adresse", jamais à chaque
-  /// frappe. Le résultat reste marqué [ResolvedLocation.isApproximate] :
-  /// une adresse géocodée est moins précise qu'un point GPS direct.
+  /// Géocode l'adresse tapée via Nominatim — une seule fois, au tap.
   Future<void> _useTypedAddress() async {
-    final fr = _fr(context);
+    final fr = _fr;
     final address = _addressCtrl.text.trim();
     if (address.isEmpty) return;
     setState(() {
@@ -253,8 +329,7 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
       final result = await _geocodingService.geocode(address);
       if (!mounted) return;
       setState(() {
-        _location = ResolvedLocation(
-            latitude: result.latitude, longitude: result.longitude, isApproximate: true);
+        _location = ResolvedLocation(latitude: result.latitude, longitude: result.longitude, isApproximate: true);
         _geocoding = false;
       });
     } on GeocodingException catch (e) {
@@ -262,9 +337,7 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
       setState(() {
         _geocoding = false;
         _locationError = switch (e.code) {
-          'not-found' => fr
-              ? "Adresse introuvable. Précisez-la et réessayez."
-              : "Address not found. Refine it and try again.",
+          'not-found' => fr ? "Adresse introuvable. Précisez-la et réessayez." : "Address not found. Refine it and try again.",
           'timeout' => fr ? "La recherche a pris trop de temps." : "The search took too long.",
           'network' => fr ? "Problème de connexion réseau." : "Network connection problem.",
           _ => fr ? "Géocodage impossible. Réessayez." : "Couldn't locate this address. Try again.",
@@ -273,14 +346,26 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
     }
   }
 
+  // ---------------------------------------------------------------- envoi
   Future<void> _submit() async {
-    final fr = _fr(context);
+    final fr = _fr;
     final uid = _authService.currentUser?.uid;
-    final qty = _parsedQuantityKg;
-    // Revérifié ici (en plus de [_canGoNext] à chaque étape) juste avant
-    // d'écrire quoi que ce soit sur Firestore — jamais confiance uniquement
-    // dans un contrôle déjà passé plus tôt dans le flux.
-    if (uid == null || _category == null || qty == null || qty <= 0 || _location == null) return;
+    final weight = _parseKg(_finalWeightCtrl);
+    // Revérifié juste avant d'écrire quoi que ce soit.
+    if (uid == null ||
+        _imageFile == null ||
+        _compressed == null ||
+        _descriptionCtrl.text.trim().isEmpty ||
+        _finalCategory == null ||
+        weight == null ||
+        _decision == _AiDecision.none) {
+      _snack(fr ? "Des informations manquent. Revenez aux étapes précédentes." : "Some details are missing. Go back to the previous steps.");
+      return;
+    }
+    if (_location == null || _addressCtrl.text.trim().isEmpty) {
+      _snack(fr ? "Choisissez une adresse ou votre position GPS." : "Choose an address or your GPS position.");
+      return;
+    }
 
     setState(() {
       _submitting = true;
@@ -293,18 +378,20 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
           ? (data?['fullName'] as String? ?? '')
           : '${data?['firstName']} ${data?['lastName'] ?? ''}'.trim();
 
-      final imageUrl = await _collectionService.uploadWastePhoto(uid, _imageFile!);
+      final imageUrl = await _collectionService.uploadCompressedWastePhoto(uid, await _compressed!);
 
       final request = await _collectionService.createRequest(
         householdUid: uid,
         householdName: name,
         imageUrl: imageUrl,
         description: _descriptionCtrl.text.trim(),
-        category: _category!,
-        quantityRange: _formatQtyKg(qty),
-        aiRequested: _useAi,
+        category: _finalCategory!,
+        quantityRange: _fmtKg(weight),
+        aiRequested: true,
         aiSuggestedCategory: _aiResult?.category,
         aiConfidence: _aiResult?.confidence,
+        aiEstimatedWeightKg: _aiResult?.estimatedWeightKg,
+        aiDecision: _decision.name,
         address: _addressCtrl.text.trim(),
         latitude: _location!.latitude,
         longitude: _location!.longitude,
@@ -316,271 +403,197 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
         MaterialPageRoute(builder: (_) => RequestStatusScreen(requestId: request.id)),
       );
     } catch (e, st) {
-      // Ecrit la VRAIE cause dans les logs (console `flutter run`) — le
-      // message affiché à l'utilisateur reste volontairement générique,
-      // mais un échec silencieux sans aucune trace serait indiscernable
-      // d'une simulation qui ne fait rien.
       debugPrint('PostWasteScreen._submit failed: $e\n$st');
       if (!mounted) return;
       setState(() {
         _submitting = false;
         _submitError = switch (e) {
-          StockImgException(code: 'rejected') => fr
-              ? "Photo refusée (5 Mo max, JPEG/PNG/WEBP) ou espace de stockage plein."
-              : "Photo rejected (5 MB max, JPEG/PNG/WEBP) or storage full.",
-          StockImgException(code: 'rate-limited') => fr
-              ? "Trop d'envois en peu de temps. Réessayez dans une minute."
-              : "Too many uploads. Try again in a minute.",
-          StockImgException(code: 'not-configured' || 'unauthorized') => fr
-              ? "Hébergement des photos non configuré (clé StockImg)."
-              : "Photo hosting not configured (StockImg key).",
-          _ => fr
-              ? "Envoi impossible. Vérifiez votre connexion et réessayez."
-              : "Couldn't submit. Check your connection and try again.",
+          WastePhotoException(code: 'invalid-image') =>
+            fr ? "Photo illisible. Choisissez une autre image (JPEG, PNG ou WEBP)." : "Unreadable photo. Pick another image (JPEG, PNG or WEBP).",
+          WastePhotoException(code: 'too-large') =>
+            fr ? "Photo trop lourde, même compressée. Choisissez-en une autre." : "Photo too heavy, even compressed. Pick another one.",
+          _ => fr ? "Envoi impossible. Vérifiez votre connexion et réessayez." : "Couldn't submit. Check your connection and try again.",
         };
       });
     }
   }
 
+  // ================================================================ UI
   @override
   Widget build(BuildContext context) {
     return ValueListenableBuilder<ThemeMode>(
       valueListenable: appThemeMode,
       builder: (context, _, __) {
         return ValueListenableBuilder<AppLanguage>(
-      valueListenable: appLanguage,
-      builder: (context, lang, _) {
-        final fr = lang == AppLanguage.fr;
-        return Scaffold(
-          backgroundColor: AppColors.surface,
-          body: Stack(
-            children: [
-              const DecorativeLeaves(subtle: true),
-              SafeArea(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          IconButton(
-                            onPressed: _submitting
-                                ? null
-                                : () => _step == 0
-                                    ? Navigator.of(context).pop()
-                                    : setState(() => _step -= 1),
-                            icon: Icon(Icons.arrow_back, color: AppColors.heading),
+          valueListenable: appLanguage,
+          builder: (context, lang, _) {
+            final fr = lang == AppLanguage.fr;
+            return Scaffold(
+              backgroundColor: AppColors.surface,
+              body: Stack(
+                children: [
+                  const DecorativeLeaves(subtle: true),
+                  SafeArea(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(8, 4, 20, 0),
+                          child: Row(
+                            children: [
+                              IconButton(
+                                onPressed: _submitting ? null : _back,
+                                icon: Icon(Icons.arrow_back, color: AppColors.heading),
+                              ),
+                              Expanded(
+                                child: Text(fr ? "Poster un déchet" : "Post waste",
+                                    style: TextStyle(
+                                        fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.heading)),
+                              ),
+                            ],
                           ),
-                          Expanded(
-                            child: Text(fr ? "Poster un déchet" : "Post waste",
-                                style: TextStyle(
-                                    fontSize: 17, fontWeight: FontWeight.w800, color: AppColors.heading)),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 4),
-                      Row(
-                        children: List.generate(_totalSteps, (i) {
-                          final active = i <= _step;
-                          return Expanded(
-                            child: Container(
-                              margin: EdgeInsets.only(right: i == _totalSteps - 1 ? 0 : 6),
-                              height: 4,
-                              decoration: BoxDecoration(
-                                color: active ? AppColors.greenMid : AppColors.line,
-                                borderRadius: BorderRadius.circular(999),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(20, 6, 20, 0),
+                          child: _StepHeader(step: _step, fr: fr),
+                        ),
+                        Expanded(
+                          child: AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 260),
+                            switchInCurve: Curves.easeOutCubic,
+                            transitionBuilder: (child, anim) => FadeTransition(
+                              opacity: anim,
+                              child: SlideTransition(
+                                position: Tween(begin: const Offset(0.04, 0), end: Offset.zero).animate(anim),
+                                child: child,
                               ),
                             ),
-                          );
-                        }),
-                      ),
-                      const SizedBox(height: 18),
-                      Expanded(
-                        child: SingleChildScrollView(
-                          child: switch (_step) {
-                            0 => _photoStep(fr),
-                            1 => _detailsStep(fr),
-                            2 => _aiStep(fr),
-                            _ => _addressStep(fr),
-                          },
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      if (_submitError != null) ...[
-                        InlineErrorBanner(message: _submitError!, retryLabel: fr ? "Réessayer" : "Retry", onRetry: _submit),
-                        const SizedBox(height: 10),
-                      ],
-                      _submitting
-                          ? const Center(
-                              child: CircularProgressIndicator(color: AppColors.greenMid, strokeWidth: 2.4))
-                          : GradientPillButton(
-                              label: _step == _totalSteps - 1
-                                  ? (fr ? "Envoyer la demande" : "Submit request")
-                                  : (fr ? "Suivant" : "Next"),
-                              onPressed: () {
-                                if (_step == _totalSteps - 1) {
-                                  if (_location == null) {
-                                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                                        content: Text(fr
-                                            ? "Choisissez une adresse ou votre position GPS."
-                                            : "Choose an address or your GPS position.")));
-                                    return;
-                                  }
-                                  _submit();
-                                } else if (_canGoNext(fr)) {
-                                  setState(() => _step += 1);
-                                }
+                            child: SingleChildScrollView(
+                              key: ValueKey(_step),
+                              padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
+                              child: switch (_step) {
+                                0 => _wasteStep(fr),
+                                1 => _analysisStep(fr),
+                                _ => _addressStep(fr),
                               },
                             ),
-                    ],
+                          ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+                          child: _bottomBar(fr),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
+                ],
               ),
-            ],
-          ),
+            );
+          },
         );
       },
     );
-      },
-    );
   }
 
-  // ---- Étape 0 : Photo ----
-  Widget _photoStep(bool fr) {
+  Widget _bottomBar(bool fr) {
+    if (_submitting) {
+      return const Padding(
+        padding: EdgeInsets.all(12),
+        child: Center(child: CircularProgressIndicator(color: AppColors.greenMid, strokeWidth: 2.4)),
+      );
+    }
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
       children: [
-        Text(fr ? "Photo du déchet" : "Photo of the waste",
-            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: AppColors.mainText)),
-        const SizedBox(height: 4),
-        Text(
-            fr
-                ? "Une photo claire aide le collecteur à identifier le déchet."
-                : "A clear photo helps the collector identify the waste.",
-            style: TextStyle(fontSize: 12, color: AppColors.textGray)),
-        const SizedBox(height: 16),
-        if (_imageFile != null)
-          ClipRRect(
-            borderRadius: BorderRadius.circular(16),
-            child: Image.file(_imageFile!, height: 220, width: double.infinity, fit: BoxFit.cover),
-          )
-        else
-          Container(
-            height: 180,
-            decoration: BoxDecoration(
-              color: AppColors.inputFill,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: AppColors.line, width: 1.4),
-            ),
-            child: Center(
-              child: Icon(Icons.image_outlined, size: 44, color: AppColors.textGray),
-            ),
-          ),
-        const SizedBox(height: 14),
-        Row(
-          children: [
-            // Pas de webcam via image_picker sur desktop (Linux/Windows/
-            // macOS n'ont pas d'implémentation caméra dans le plugin) — un
-            // bouton "Caméra" y échouerait en silence, donc masqué plutôt
-            // que laissé simulé (demande explicite : plus de simulations).
-            if (!_isDesktop) ...[
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () => _pickImage(ImageSource.camera),
-                  icon: const Icon(Icons.photo_camera_outlined, size: 18),
-                  label: Text(fr ? "Caméra" : "Camera"),
-                ),
-              ),
-              const SizedBox(width: 10),
-            ],
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: _pickImageFromFiles,
-                icon: const Icon(Icons.photo_library_outlined, size: 18),
-                label: Text(fr ? "Galerie" : "Gallery"),
-              ),
-            ),
-          ],
-        ),
-        if (_imageError != null) ...[
-          const SizedBox(height: 12),
-          InlineErrorBanner(message: _imageError!),
+        if (_submitError != null) ...[
+          InlineErrorBanner(message: _submitError!, retryLabel: fr ? "Réessayer" : "Retry", onRetry: _submit),
+          const SizedBox(height: 10),
         ],
+        switch (_step) {
+          0 => GradientPillButton(
+              label: fr ? "Analyser avec l'IA" : "Analyze with AI",
+              trailingIcon: RemixIcons.sparkling_2_fill,
+              onPressed: _goToAnalysis,
+            ),
+          1 => (_decision == _AiDecision.none)
+              ? const SizedBox.shrink()
+              : GradientPillButton(label: fr ? "Continuer" : "Continue", onPressed: _goToAddress),
+          _ => GradientPillButton(
+              label: fr ? "Publier le déchet" : "Post the waste",
+              trailingIcon: Icons.send_rounded,
+              onPressed: _submit,
+            ),
+        },
       ],
     );
   }
 
-  // ---- Étape 1 : Description, catégorie, quantité ----
-  Widget _detailsStep(bool fr) {
+  // ---------------------------------------------------------------- étape 0
+  Widget _wasteStep(bool fr) {
+    final missingPhoto = _triedStep0 && _imageFile == null;
+    final missingDescription = _triedStep0 && _descriptionCtrl.text.trim().isEmpty;
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _sectionCard(
-          icon: Icons.notes_rounded,
-          title: fr ? "Description" : "Description",
+        _sectionTitle(fr ? "Photo du déchet" : "Photo of the waste", required: true, fr: fr),
+        const SizedBox(height: 10),
+        _photoPicker(fr, error: missingPhoto),
+        const SizedBox(height: 22),
+        _sectionTitle(fr ? "Description" : "Description", required: true, fr: fr),
+        const SizedBox(height: 10),
+        _card(
           child: TextField(
             controller: _descriptionCtrl,
             maxLines: 3,
+            minLines: 2,
             textCapitalization: TextCapitalization.sentences,
+            onChanged: (_) {
+              if (_triedStep0) setState(() {});
+            },
             decoration: InputDecoration(
               hintText: fr
-                  ? "Ex. Bouteilles plastique et cartons d'emballage"
-                  : "E.g. Plastic bottles and packaging boxes",
+                  ? "Ex. Une vingtaine de bouteilles plastique, propres et écrasées"
+                  : "E.g. About twenty clean, crushed plastic bottles",
+              border: InputBorder.none,
+              enabledBorder: InputBorder.none,
+              focusedBorder: InputBorder.none,
+              filled: false,
+              errorText: missingDescription ? (fr ? "La description est obligatoire." : "A description is required.") : null,
             ),
           ),
         ),
-        const SizedBox(height: 14),
-        _sectionCard(
-          icon: Icons.category_outlined,
-          title: fr ? "Catégorie" : "Category",
-          child: Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: WasteCategory.values.map((c) {
-              final active = _category == c;
-              return ChoiceChip(
-                avatar: Icon(c.icon, size: 16, color: active ? Colors.white : c.color),
-                label: Text(c.label(fr)),
-                selected: active,
-                labelStyle: TextStyle(color: active ? Colors.white : c.color, fontWeight: FontWeight.w700),
-                selectedColor: c.color,
-                backgroundColor: c.color.withOpacity(0.08),
-                side: BorderSide(color: c.color.withOpacity(active ? 0 : 0.35)),
-                onSelected: (_) => setState(() => _category = c),
-              );
-            }).toList(),
-          ),
+        const SizedBox(height: 22),
+        _sectionTitle(fr ? "Catégorie" : "Category", required: false, fr: fr),
+        const SizedBox(height: 4),
+        Text(
+            fr
+                ? "Facultatif : si vous hésitez, l'IA la déterminera à partir de la photo."
+                : "Optional: if you're not sure, the AI will work it out from the photo.",
+            style: TextStyle(fontSize: 11.5, color: AppColors.textGray)),
+        const SizedBox(height: 10),
+        WasteCategoryPicker(
+          selected: _userCategory,
+          fr: fr,
+          allowDeselect: true,
+          onChanged: (c) => setState(() => _userCategory = c),
         ),
-        const SizedBox(height: 14),
-        _sectionCard(
-          icon: Icons.scale_outlined,
-          title: fr ? "Quantité" : "Quantity",
+        const SizedBox(height: 22),
+        _sectionTitle(fr ? "Poids estimé" : "Estimated weight", required: false, fr: fr),
+        const SizedBox(height: 4),
+        Text(
+            fr ? "Facultatif : une estimation ou le poids exact." : "Optional: an estimate or the exact weight.",
+            style: TextStyle(fontSize: 11.5, color: AppColors.textGray)),
+        const SizedBox(height: 10),
+        _card(
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Saisie libre (demande explicite : "ça ne doit pas proposer
-              // à l'utilisateur, ça doit offrir un espace et laisser
-              // l'utilisateur entrer une approximation ou une quantité
-              // exacte") — plus de paliers fixes à choisir, un nombre de kg
-              // tapé directement, qu'il soit approximatif ou précis au gramme.
-              Text(
-                fr
-                    ? "Entrez une estimation ou le poids exact, en kilogrammes."
-                    : "Enter an estimate or the exact weight, in kilograms.",
-                style: TextStyle(fontSize: 11, color: AppColors.textGray),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: _quantityCtrl,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]'))],
-                decoration: InputDecoration(
-                  hintText: fr ? "Ex. 3.5" : "E.g. 3.5",
-                  prefixIcon: const Icon(Icons.scale_outlined, size: 19),
-                  suffixText: 'kg',
-                ),
-              ),
+              WeightInput(controller: _userWeightCtrl, fr: fr, onChanged: () => setState(() {})),
+              if (_userWeightInvalid) ...[
+                const SizedBox(height: 6),
+                Text(fr ? "Entrez un nombre de kg valide." : "Enter a valid number of kg.",
+                    style: const TextStyle(fontSize: 11.5, color: Colors.redAccent)),
+              ],
             ],
           ),
         ),
@@ -588,220 +601,442 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
     );
   }
 
-  /// Carte partagée pour chaque section du formulaire (demande explicite :
-  /// "rends le plus beau") — icône + titre + contenu, même traitement
-  /// visuel que les cartes du reste de l'app plutôt que du texte brut posé
-  /// sur le fond.
-  Widget _sectionCard({required IconData icon, required String title, required Widget child}) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
+  Widget _photoPicker(bool fr, {required bool error}) {
+    final file = _imageFile;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 220),
       decoration: BoxDecoration(
         color: AppColors.card,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: AppColors.line, width: 1.2),
-        boxShadow: [
-          BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 10, offset: const Offset(0, 4)),
-        ],
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(
+            color: error ? Colors.redAccent : (file == null ? AppColors.greenMid.withValues(alpha: 0.45) : AppColors.line),
+            width: file == null ? 1.6 : 1.2),
+        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 12, offset: const Offset(0, 4))],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(icon, size: 16, color: AppColors.greenDeep),
-              const SizedBox(width: 6),
-              Text(title,
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: AppColors.mainText)),
-            ],
-          ),
-          const SizedBox(height: 10),
-          child,
-        ],
-      ),
-    );
-  }
-
-  // ---- Étape 2 : Analyse IA ----
-  Widget _aiStep(bool fr) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: AppColors.card,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: AppColors.line, width: 1.2),
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 38,
-                height: 38,
-                decoration: const BoxDecoration(color: Color(0xFFEAF6FB), shape: BoxShape.circle),
-                child: const Icon(Icons.smart_toy_outlined, color: Color(0xFF2094C4), size: 19),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(fr ? "Analyse IA" : "AI analysis",
-                        style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13, color: AppColors.mainText)),
-                    Text(
-                        fr
-                            ? "Optionnelle — une suggestion à confirmer, jamais une décision finale."
-                            : "Optional — a suggestion to confirm, never a final decision.",
-                        style: TextStyle(fontSize: 10.5, color: AppColors.textGray)),
-                  ],
-                ),
-              ),
-              Switch(
-                value: _useAi,
-                activeColor: AppColors.greenMid,
-                onChanged: (v) => setState(() {
-                  _useAi = v;
-                  if (!v) {
-                    _aiResult = null;
-                    _aiError = null;
-                  }
-                }),
-              ),
-            ],
-          ),
-        ),
-        if (_useAi) ...[
-          const SizedBox(height: 16),
-          if (_aiRunning)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 24),
-              child: Center(child: CircularProgressIndicator(color: AppColors.greenMid, strokeWidth: 2.4)),
-            )
-          else if (_aiResult != null)
-            _aiResultCard(fr)
-          else if (_aiError != null)
-            InlineErrorBanner(message: _aiError!, retryLabel: fr ? "Réessayer" : "Retry", onRetry: _runAi)
-          else
-            OutlinedButton.icon(
-              onPressed: _runAi,
-              icon: const Icon(Icons.auto_awesome_outlined, size: 18),
-              label: Text(fr ? "Lancer l'analyse" : "Run analysis"),
-            ),
-        ],
-      ],
-    );
-  }
-
-  Widget _aiResultCard(bool fr) {
-    final result = _aiResult!;
-    final matches = _category == result.category;
-    final aiWeight = result.estimatedWeightKg;
-    final currentQty = _parsedQuantityKg;
-    final quantityMatches = aiWeight == null ||
-        (currentQty != null && (currentQty - aiWeight).abs() < 0.05);
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: AppColors.greenBright.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.greenBright.withOpacity(0.3)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(result.category.icon, color: AppColors.greenDeep),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  fr
-                      ? "Suggestion : ${result.category.label(fr)}"
-                      : "Suggestion: ${result.category.label(fr)}",
-                  style: TextStyle(fontWeight: FontWeight.w800, color: AppColors.mainText),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          Text(
-            fr
-                ? "Confiance : ${(result.confidence * 100).toStringAsFixed(0)} %"
-                : "Confidence: ${(result.confidence * 100).toStringAsFixed(0)}%",
-            style: TextStyle(fontSize: 11.5, color: AppColors.textGray),
-          ),
-          if (aiWeight != null) ...[
-            const SizedBox(height: 4),
-            Text(
-              fr
-                  ? "Poids estimé : ${_formatQtyKg(aiWeight)}"
-                  : "Estimated weight: ${_formatQtyKg(aiWeight)}",
-              style: TextStyle(fontSize: 11.5, color: AppColors.textGray),
-            ),
-          ],
-          const SizedBox(height: 12),
-          if (!quantityMatches)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: SizedBox(
-                width: double.infinity,
-                child: OutlinedButton(
-                  onPressed: () =>
-                      setState(() => _quantityCtrl.text = _formatQtyNumber(aiWeight!)),
-                  child: Text(fr
-                      ? "Utiliser ce poids (${_formatQtyKg(aiWeight)})"
-                      : "Use this weight (${_formatQtyKg(aiWeight)})"),
-                ),
-              ),
-            ),
-          if (!matches)
-            Row(
+      clipBehavior: Clip.antiAlias,
+      child: file != null
+          ? Stack(
               children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: () => ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                        content: Text(fr
-                            ? "Catégorie conservée : ${_category?.label(fr)}"
-                            : "Category kept: ${_category?.label(fr)}"))),
-                    child: Text(fr ? "Garder ${_category?.label(fr)}" : "Keep ${_category?.label(fr)}"),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(backgroundColor: AppColors.greenMid, foregroundColor: Colors.white),
-                    onPressed: () => setState(() => _category = result.category),
-                    child: Text(fr ? "Utiliser cette catégorie" : "Use this category"),
+                Image.file(file, height: 220, width: double.infinity, fit: BoxFit.cover),
+                Positioned(top: 12, left: 12, child: _optimizedBadge(fr)),
+                Positioned(
+                  left: 12,
+                  right: 12,
+                  bottom: 12,
+                  child: Row(
+                    children: [
+                      if (!_isDesktop) ...[
+                        Expanded(child: _glassButton(Icons.photo_camera_rounded, fr ? "Reprendre" : "Retake", _pickFromCamera)),
+                        const SizedBox(width: 8),
+                      ],
+                      Expanded(child: _glassButton(Icons.photo_library_rounded, fr ? "Changer" : "Change", _pickFromFiles)),
+                    ],
                   ),
                 ),
               ],
             )
+          : Padding(
+              padding: const EdgeInsets.fromLTRB(18, 26, 18, 18),
+              child: Column(
+                children: [
+                  Container(
+                    width: 64,
+                    height: 64,
+                    decoration: BoxDecoration(
+                      gradient: AppColors.buttonGradient,
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(color: AppColors.greenMid.withValues(alpha: 0.35), blurRadius: 16, offset: const Offset(0, 6)),
+                      ],
+                    ),
+                    child: const Icon(RemixIcons.camera_3_fill, color: Colors.white, size: 28),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(fr ? "Ajoutez une photo nette du déchet" : "Add a clear photo of the waste",
+                      style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.mainText)),
+                  const SizedBox(height: 4),
+                  Text(
+                      fr
+                          ? "Bien cadrée et éclairée : l'IA et le collecteur s'en serviront."
+                          : "Well framed and lit: the AI and the collector will rely on it.",
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 11.5, color: AppColors.textGray)),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      if (!_isDesktop) ...[
+                        Expanded(child: _softButton(Icons.photo_camera_rounded, fr ? "Caméra" : "Camera", _pickFromCamera)),
+                        const SizedBox(width: 10),
+                      ],
+                      Expanded(child: _softButton(Icons.photo_library_rounded, fr ? "Galerie" : "Gallery", _pickFromFiles)),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+    );
+  }
+
+  /// Pastille sur la photo : « Optimisation… » puis poids final.
+  Widget _optimizedBadge(bool fr) {
+    final size = _compressedSize;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.55), borderRadius: BorderRadius.circular(999)),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (size == null)
+            const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 1.8, color: Colors.white))
           else
-            Text(fr ? "Correspond à votre choix ✓" : "Matches your choice ✓",
-                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.greenDeep)),
+            const Icon(Icons.bolt_rounded, size: 14, color: Colors.white),
+          const SizedBox(width: 6),
+          Text(
+              size == null
+                  ? (fr ? "Optimisation…" : "Optimizing…")
+                  : (fr ? "Photo optimisée · ${(size / 1024).round()} Ko" : "Optimized photo · ${(size / 1024).round()} KB"),
+              style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700)),
         ],
       ),
     );
   }
 
-  // ---- Étape 3 : Adresse + récapitulatif ----
+  Widget _softButton(IconData icon, String label, VoidCallback onTap) {
+    return Material(
+      color: AppColors.greenMid.withValues(alpha: 0.10),
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 18, color: AppColors.greenDeep),
+              const SizedBox(width: 8),
+              Text(label, style: const TextStyle(fontWeight: FontWeight.w800, color: AppColors.greenDeep)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _glassButton(IconData icon, String label, VoidCallback onTap) {
+    return Material(
+      color: Colors.black.withValues(alpha: 0.45),
+      borderRadius: BorderRadius.circular(999),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(999),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 9),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 16, color: Colors.white),
+              const SizedBox(width: 6),
+              Text(label, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 12.5)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------- étape 1
+  Widget _analysisStep(bool fr) {
+    if (_aiRunning) return _analyzing(fr);
+    final ai = _aiResult;
+    if (ai == null) return _aiFailed(fr);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _aiResultCard(ai, fr),
+        const SizedBox(height: 16),
+        if (_decision == _AiDecision.none)
+          Row(
+            children: [
+              Expanded(
+                child: SizedBox(
+                  height: 50,
+                  child: OutlinedButton.icon(
+                    onPressed: _refuse,
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.redAccent, width: 1.4),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
+                    ),
+                    icon: const Icon(Icons.close_rounded, color: Colors.redAccent, size: 18),
+                    label: Text(fr ? "Refuser" : "Reject",
+                        style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.w800)),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: GradientPillButton(
+                  label: fr ? "Accepter" : "Accept",
+                  trailingIcon: Icons.check_rounded,
+                  onPressed: _accept,
+                ),
+              ),
+            ],
+          )
+        else
+          _decisionPanel(fr),
+      ],
+    );
+  }
+
+  Widget _analyzing(bool fr) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 40),
+      child: Column(
+        children: [
+          const _PulsingAiOrb(),
+          const SizedBox(height: 22),
+          Text(fr ? "L'IA analyse votre photo…" : "The AI is analyzing your photo…",
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: AppColors.mainText)),
+          const SizedBox(height: 6),
+          Text(fr ? "Catégorie et poids estimé, en quelques secondes." : "Category and estimated weight, in a few seconds.",
+              style: TextStyle(fontSize: 12, color: AppColors.textGray)),
+        ],
+      ),
+    );
+  }
+
+  Widget _aiFailed(bool fr) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        InlineErrorBanner(
+          message: _aiError ?? (fr ? "Analyse impossible." : "Analysis unavailable."),
+          retryLabel: fr ? "Réessayer" : "Retry",
+          onRetry: _runAi,
+        ),
+        const SizedBox(height: 14),
+        if (_decision == _AiDecision.none)
+          SizedBox(
+            height: 48,
+            child: OutlinedButton.icon(
+              onPressed: _continueWithoutAi,
+              style: OutlinedButton.styleFrom(
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999))),
+              icon: const Icon(Icons.edit_rounded, size: 18),
+              label: Text(fr ? "Continuer avec mes valeurs" : "Continue with my values"),
+            ),
+          )
+        else
+          _editForm(fr),
+      ],
+    );
+  }
+
+  Widget _aiResultCard(AiClassificationResult ai, bool fr) {
+    final c = ai.category;
+    final confidence = (ai.confidence * 100).round();
+    final w = ai.estimatedWeightKg;
+    final userC = _userCategory;
+    final userW = _parseKg(_userWeightCtrl);
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: c.color.withValues(alpha: 0.35), width: 1.4),
+        boxShadow: [BoxShadow(color: c.color.withValues(alpha: 0.14), blurRadius: 18, offset: const Offset(0, 8))],
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+            decoration: BoxDecoration(gradient: c.gradient),
+            child: Row(
+              children: [
+                const Icon(RemixIcons.sparkling_2_fill, color: Colors.white, size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(fr ? "Résultat de l'analyse IA" : "AI analysis result",
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 13.5)),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                  decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.22), borderRadius: BorderRadius.circular(999)),
+                  child: Text(fr ? "Confiance $confidence %" : "Confidence $confidence%",
+                      style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w800)),
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    WasteCategoryBadge(category: c, size: 56),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(c.label(fr),
+                              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: AppColors.mainText)),
+                          const SizedBox(height: 2),
+                          Text(
+                              w == null
+                                  ? (fr ? "Poids non estimé" : "Weight not estimated")
+                                  : (fr ? "Environ ${_fmtKg(w)}" : "About ${_fmtKg(w)}"),
+                              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: c.color)),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(999),
+                  child: LinearProgressIndicator(
+                    value: ai.confidence,
+                    minHeight: 6,
+                    color: c.color,
+                    backgroundColor: c.color.withValues(alpha: 0.12),
+                  ),
+                ),
+                if (userC != null || userW != null) ...[
+                  const SizedBox(height: 14),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(color: AppColors.inputFill, borderRadius: BorderRadius.circular(14)),
+                    child: Row(
+                      children: [
+                        Icon(Icons.person_outline_rounded, size: 16, color: AppColors.textGray),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            [
+                              fr ? "Vous aviez indiqué :" : "You entered:",
+                              if (userC != null) userC.label(fr),
+                              if (userW != null) _fmtKg(userW),
+                            ].join(' '),
+                            style: TextStyle(fontSize: 12, color: AppColors.textGray),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Après Accepter ou Refuser : rappel du choix + valeurs retenues.
+  Widget _decisionPanel(bool fr) {
+    final accepted = _decision == _AiDecision.accepted;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Icon(accepted ? Icons.check_circle_rounded : Icons.edit_rounded,
+                size: 18, color: accepted ? AppColors.greenDeep : const Color(0xFFB07E00)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                  accepted
+                      ? (fr ? "Résultat de l'IA accepté : ce sont les données du post." : "AI result accepted: these are the post's details.")
+                      : (fr ? "Corrigez les valeurs : ce sont elles qui seront enregistrées." : "Correct the values: these will be saved."),
+                  style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: AppColors.mainText)),
+            ),
+            TextButton(
+              onPressed: () => setState(() => _decision = _AiDecision.none),
+              child: Text(fr ? "Changer" : "Change"),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (accepted && !_askWeight)
+          _finalSummary(fr)
+        else if (accepted) ...[
+          Text(fr ? "L'IA n'a pas pu estimer le poids : indiquez-le." : "The AI couldn't estimate the weight: please enter it.",
+              style: TextStyle(fontSize: 12, color: AppColors.textGray)),
+          const SizedBox(height: 10),
+          _card(child: WeightInput(controller: _finalWeightCtrl, fr: fr, onChanged: () => setState(() {}))),
+        ] else
+          _editForm(fr),
+      ],
+    );
+  }
+
+  Widget _finalSummary(bool fr) {
+    final c = _finalCategory!;
+    final w = _parseKg(_finalWeightCtrl)!;
+    final points = RewardsConfig.pointsForCollection(c, w).round();
+    return _card(
+      child: Row(
+        children: [
+          WasteCategoryBadge(category: c, size: 44),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text("${c.label(fr)} · ${_fmtKg(w)}",
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.mainText)),
+                Text(fr ? "≈ $points points à la collecte" : "≈ $points points on pickup",
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.greenDeep)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Formulaire de correction (refus de l'IA ou analyse indisponible).
+  Widget _editForm(bool fr) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _sectionTitle(fr ? "Catégorie" : "Category", required: true, fr: fr),
+        const SizedBox(height: 10),
+        WasteCategoryPicker(
+          selected: _finalCategory,
+          fr: fr,
+          onChanged: (c) => setState(() => _finalCategory = c),
+        ),
+        const SizedBox(height: 18),
+        _sectionTitle(fr ? "Poids" : "Weight", required: true, fr: fr),
+        const SizedBox(height: 10),
+        _card(child: WeightInput(controller: _finalWeightCtrl, fr: fr, onChanged: () => setState(() {}))),
+      ],
+    );
+  }
+
+  // ---------------------------------------------------------------- étape 2
   Widget _addressStep(bool fr) {
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(fr ? "Adresse de collecte" : "Collection address",
-            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: AppColors.mainText)),
-        const SizedBox(height: 12),
+        _sectionTitle(fr ? "Adresse de collecte" : "Collection address", required: true, fr: fr),
+        const SizedBox(height: 10),
         Row(
           children: [
             Expanded(
-              child: _addressModeChip(fr ? "GPS de l'appareil" : "Device GPS", _useGps,
+              child: _modeChip(Icons.my_location_rounded, fr ? "GPS de l'appareil" : "Device GPS", _useGps,
                   () => setState(() => _useGps = true)),
             ),
-            const SizedBox(width: 8),
+            const SizedBox(width: 10),
             Expanded(
-              child: _addressModeChip(fr ? "Adresse tapée" : "Typed address", !_useGps,
+              child: _modeChip(Icons.edit_location_alt_rounded, fr ? "Adresse tapée" : "Typed address", !_useGps,
                   () => setState(() => _useGps = false)),
             ),
           ],
@@ -813,16 +1048,12 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
                   padding: EdgeInsets.symmetric(vertical: 12),
                   child: Center(child: CircularProgressIndicator(color: AppColors.greenMid, strokeWidth: 2.4)),
                 )
-              : OutlinedButton.icon(
-                  onPressed: _useDeviceGps,
-                  icon: const Icon(Icons.my_location_rounded, size: 18),
-                  label: Text(fr ? "Utiliser ma position" : "Use my location"),
-                )
+              : _softButton(Icons.my_location_rounded, fr ? "Utiliser ma position" : "Use my location", _useDeviceGps)
         else ...[
           TextField(
             controller: _addressCtrl,
             decoration: InputDecoration(
-              hintText: fr ? "Ex. Rue 123, quartier Bonamoussadi, Douala" : "E.g. Street 123, Bonamoussadi, Douala",
+              hintText: fr ? "Ex. Rue 123, Bonamoussadi, Douala" : "E.g. Street 123, Bonamoussadi, Douala",
               prefixIcon: const Icon(Icons.edit_location_alt_outlined, size: 19),
             ),
           ),
@@ -832,9 +1063,8 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
                   padding: EdgeInsets.symmetric(vertical: 12),
                   child: Center(child: CircularProgressIndicator(color: AppColors.greenMid, strokeWidth: 2.4)),
                 )
-              : OutlinedButton(
-                  onPressed: _useTypedAddress,
-                  child: Text(fr ? "Localiser cette adresse" : "Locate this address")),
+              : _softButton(Icons.travel_explore_rounded, fr ? "Localiser cette adresse" : "Locate this address",
+                  _useTypedAddress),
         ],
         if (_locationError != null) ...[
           const SizedBox(height: 12),
@@ -848,48 +1078,263 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
               approximate: _location!.isApproximate,
               fr: fr),
         ],
-        const SizedBox(height: 22),
-        Text(fr ? "Récapitulatif" : "Summary",
-            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.mainText)),
-        const SizedBox(height: 8),
-        _summaryRow(fr ? "Catégorie" : "Category", _category?.label(fr) ?? '—'),
-        _summaryRow(fr ? "Quantité" : "Quantity",
-            _parsedQuantityKg == null ? '—' : _formatQtyKg(_parsedQuantityKg!)),
-        _summaryRow(fr ? "Analyse IA" : "AI analysis", _useAi ? (fr ? "Activée" : "Enabled") : (fr ? "Désactivée" : "Disabled")),
+        const SizedBox(height: 24),
+        _sectionTitle(fr ? "Récapitulatif" : "Summary", required: false, fr: fr, showOptional: false),
+        const SizedBox(height: 10),
+        _recap(fr),
       ],
     );
   }
 
-  Widget _addressModeChip(String label, bool active, VoidCallback onTap) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 11),
-        decoration: BoxDecoration(
-          color: active ? AppColors.greenMid.withOpacity(0.12) : AppColors.inputFill,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: active ? AppColors.greenMid : AppColors.line, width: 1.4),
-        ),
-        child: Text(label,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-                color: active ? AppColors.heading : AppColors.textGray)),
+  Widget _recap(bool fr) {
+    final c = _finalCategory;
+    final w = _parseKg(_finalWeightCtrl);
+    return _card(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              if (_imageFile != null)
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: Image.file(_imageFile!, width: 58, height: 58, fit: BoxFit.cover),
+                ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(_descriptionCtrl.text.trim(),
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 12.5, color: AppColors.mainText, height: 1.35)),
+              ),
+            ],
+          ),
+          const Divider(height: 22),
+          _recapRow(fr ? "Catégorie" : "Category", c?.label(fr) ?? '—'),
+          _recapRow(fr ? "Poids" : "Weight", w == null ? '—' : _fmtKg(w)),
+          _recapRow(
+              fr ? "Analyse IA" : "AI analysis",
+              switch (_decision) {
+                _AiDecision.accepted => fr ? "Acceptée" : "Accepted",
+                _AiDecision.refused => fr ? "Refusée, valeurs corrigées" : "Rejected, values corrected",
+                _AiDecision.unavailable => fr ? "Indisponible" : "Unavailable",
+                _AiDecision.none => '—',
+              }),
+          if (c != null && w != null)
+            _recapRow(fr ? "Points estimés" : "Estimated points",
+                "≈ ${RewardsConfig.pointsForCollection(c, w).round()} P",
+                highlight: true),
+        ],
       ),
     );
   }
 
-  Widget _summaryRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Row(
-        children: [
-          Text(label, style: TextStyle(fontSize: 12, color: AppColors.textGray)),
-          const Spacer(),
-          Text(value, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.mainText)),
-        ],
+  Widget _recapRow(String label, String value, {bool highlight = false}) => Padding(
+        padding: const EdgeInsets.only(bottom: 6),
+        child: Row(
+          children: [
+            Text(label, style: TextStyle(fontSize: 12.5, color: AppColors.textGray)),
+            const Spacer(),
+            Text(value,
+                style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w800,
+                    color: highlight ? AppColors.greenDeep : AppColors.mainText)),
+          ],
+        ),
+      );
+
+  Widget _modeChip(IconData icon, String label, bool active, VoidCallback onTap) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 180),
+      decoration: BoxDecoration(
+        gradient: active ? AppColors.buttonGradient : null,
+        color: active ? null : AppColors.card,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: active ? Colors.transparent : AppColors.line, width: 1.2),
       ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(icon, size: 16, color: active ? Colors.white : AppColors.textGray),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(label,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w800,
+                          color: active ? Colors.white : AppColors.textGray)),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------- commun
+  Widget _sectionTitle(String title, {required bool required, required bool fr, bool showOptional = true}) {
+    return Row(
+      children: [
+        Text(title, style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w800, color: AppColors.mainText)),
+        const SizedBox(width: 8),
+        if (required)
+          const Text("*", style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w800, color: Colors.redAccent))
+        else if (showOptional)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            decoration: BoxDecoration(color: AppColors.inputFill, borderRadius: BorderRadius.circular(999)),
+            child: Text(fr ? "facultatif" : "optional",
+                style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w700, color: AppColors.textGray)),
+          ),
+      ],
+    );
+  }
+
+  Widget _card({required Widget child}) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppColors.line, width: 1.2),
+        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 10, offset: const Offset(0, 4))],
+      ),
+      child: child,
+    );
+  }
+}
+
+/// En-tête des 3 étapes : pastilles numérotées reliées, libellé sous chacune.
+class _StepHeader extends StatelessWidget {
+  final int step;
+  final bool fr;
+  const _StepHeader({required this.step, required this.fr});
+
+  @override
+  Widget build(BuildContext context) {
+    final labels = fr ? ["Votre déchet", "Analyse IA", "Adresse"] : ["Your waste", "AI analysis", "Address"];
+    final icons = [RemixIcons.camera_3_fill, RemixIcons.sparkling_2_fill, RemixIcons.map_pin_2_fill];
+    return Row(
+      children: List.generate(labels.length * 2 - 1, (i) {
+        if (i.isOdd) {
+          final done = i ~/ 2 < step;
+          return Expanded(
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 18),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 250),
+                height: 3,
+                margin: const EdgeInsets.symmetric(horizontal: 6),
+                decoration: BoxDecoration(
+                  color: done ? AppColors.greenMid : AppColors.line,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+              ),
+            ),
+          );
+        }
+        final index = i ~/ 2;
+        final active = index == step;
+        final done = index < step;
+        return Column(
+          children: [
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 250),
+              width: 34,
+              height: 34,
+              decoration: BoxDecoration(
+                gradient: active || done ? AppColors.buttonGradient : null,
+                color: active || done ? null : AppColors.card,
+                shape: BoxShape.circle,
+                border: Border.all(color: active || done ? Colors.transparent : AppColors.line, width: 1.4),
+              ),
+              child: Icon(done ? Icons.check_rounded : icons[index],
+                  size: 16, color: active || done ? Colors.white : AppColors.textGray),
+            ),
+            const SizedBox(height: 4),
+            Text(labels[index],
+                style: TextStyle(
+                    fontSize: 10.5,
+                    fontWeight: active ? FontWeight.w800 : FontWeight.w600,
+                    color: active ? AppColors.greenDeep : AppColors.textGray)),
+          ],
+        );
+      }),
+    );
+  }
+}
+
+/// Orbe animée affichée pendant l'analyse IA.
+class _PulsingAiOrb extends StatefulWidget {
+  const _PulsingAiOrb();
+
+  @override
+  State<_PulsingAiOrb> createState() => _PulsingAiOrbState();
+}
+
+class _PulsingAiOrbState extends State<_PulsingAiOrb> with SingleTickerProviderStateMixin {
+  late final AnimationController _c =
+      AnimationController(vsync: this, duration: const Duration(milliseconds: 1400))..repeat();
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _c,
+      builder: (context, _) {
+        final t = _c.value;
+        return SizedBox(
+          width: 130,
+          height: 130,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              for (final offset in [0.0, 0.5])
+                Builder(builder: (_) {
+                  final p = (t + offset) % 1.0;
+                  return Container(
+                    width: 70 + 60 * p,
+                    height: 70 + 60 * p,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: AppColors.greenMid.withValues(alpha: 0.22 * (1 - p)),
+                    ),
+                  );
+                }),
+              Container(
+                width: 72,
+                height: 72,
+                decoration: BoxDecoration(
+                  gradient: AppColors.buttonGradient,
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(color: AppColors.greenMid.withValues(alpha: 0.4), blurRadius: 18, offset: const Offset(0, 6)),
+                  ],
+                ),
+                child: Transform.rotate(
+                  angle: t * 6.283,
+                  child: const Icon(RemixIcons.sparkling_2_fill, color: Colors.white, size: 30),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

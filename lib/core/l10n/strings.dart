@@ -82,7 +82,7 @@ class AppStrings {
   String get createAccount => _fr ? "S'inscrire" : "Sign up";
   String get signUpAsHousehold => _fr
       ? "S'inscrire comme fournisseur de déchets"
-      : "Sign up as waste provider";
+      : "Sign up as waste supplier";
   String get signUpAsCollector =>
       _fr ? "S'inscrire comme collecteur" : "Sign up as collector";
 
@@ -96,7 +96,7 @@ class AppStrings {
       ? "Rejoignez EcoLindk et faites partie du changement ! 🌱"
       : "Join EcoLindk and be part of the change! 🌱";
   String get signUpAs => _fr ? "S'INSCRIRE EN TANT QUE" : "SIGN UP AS";
-  String get roleHousehold => _fr ? "Fournisseur de déchets" : "Waste Provider";
+  String get roleHousehold => _fr ? "Fournisseur de déchets" : "Waste Supplier";
   String get roleCollector => _fr ? "Collecteur" : "Collector";
 
   String get workStatusQuestion => _fr
@@ -150,8 +150,8 @@ class AppStrings {
   String get phoneStepTitle =>
       _fr ? "Votre numéro de téléphone" : "Your phone number";
   String get phoneStepSubtitle => _fr
-      ? "Optionnel — il nous sert à vous contacter au sujet de vos collectes."
-      : "Optional — we'll use it to reach you about your pickups.";
+      ? "Nous vous enverrons un code de vérification. Il nous sert aussi à vous contacter au sujet de vos collectes."
+      : "We'll send you a verification code. We also use it to reach you about your pickups.";
 
   // ---- Choix du rôle (après création du compte) ----
   String get chooseRoleTitle => _fr
@@ -253,10 +253,6 @@ class AppStrings {
   String get quickActions => _fr ? "Actions rapides" : "Quick actions";
   String get declareWaste => _fr ? "Déclarer un déchet" : "Declare waste";
   String get myPickups => _fr ? "Mes collectes" : "My pickups";
-  String get recyclablesMarket =>
-      _fr ? "Marché des recyclables" : "Recyclables market";
-  String get recyclingCenters =>
-      _fr ? "Centres de recyclage" : "Recycling centers";
   String get aiAssistant => _fr ? "Assistant IA" : "AI Assistant";
   String get aiAssistantDesc => _fr
       ? "Posez vos questions sur le recyclage et la valorisation."
@@ -264,7 +260,6 @@ class AppStrings {
   String get myImpact => _fr ? "Mon impact" : "My impact";
   String get pickups => _fr ? "Collectes" : "Pickups";
   String get wasteValorised => _fr ? "Déchets valorisés" : "Waste valorised";
-  String get treesSaved => _fr ? "Arbres sauvés" : "Trees saved";
   // ---- Profil / Compte ----
   String get workStatusLabel => _fr ? "STATUT" : "STATUS";
   String get statusVerified => _fr ? "Vérifié" : "Verified";

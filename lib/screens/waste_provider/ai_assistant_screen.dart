@@ -31,11 +31,17 @@ class _NewlineIntent extends Intent {
 }
 
 /// Écran de l'Assistant IA, ouvert depuis le petit bouton flottant du
-/// dashboard (voir WasteProviderShell) — conversation en direct avec l'API
+/// dashboard (voir WasteProviderShell) ou de la carte "Assistant IA" du
+/// dashboard Collecteur (voir CollectorShell, [forCollector]) — conversation en direct avec l'API
 /// Gemini (voir GeminiService), dans le même style de bulles que ChatScreen
 /// pour rester cohérent avec le reste de l'app.
 class AiAssistantScreen extends StatefulWidget {
-  const AiAssistantScreen({super.key});
+  /// `true` depuis le dashboard Collecteur : le cadrage du modèle couvre
+  /// alors aussi le travail du collecteur (accepter/peser une collecte,
+  /// commission, abonnement Premium) au lieu du seul point de vue
+  /// Fournisseur.
+  final bool forCollector;
+  const AiAssistantScreen({super.key, this.forCollector = false});
 
   @override
   State<AiAssistantScreen> createState() => _AiAssistantScreenState();
@@ -68,12 +74,83 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
   }
 
   Future<void> _initSpeech() async {
-    // L'initialisation demande la permission micro (Android/iOS) — un échec
-    // (refus, appareil non compatible) désactive juste le bouton micro,
-    // jamais bloquant pour le reste de l'assistant.
-    final available = await _speech.initialize();
+    // L'initialisation demande la permission micro (Android/iOS). Un échec
+    // ne bloque jamais l'assistant ; le bouton micro reste visible et
+    // explique pourquoi la dictée est indisponible (avant, il disparaissait
+    // sans explication).
+    bool available = false;
+    try {
+      available = await _speech.initialize(
+        onError: _onSpeechError,
+        onStatus: _onSpeechStatus,
+      );
+    } catch (e) {
+      debugPrint('SpeechToText.initialize failed: $e');
+    }
     if (!mounted) return;
     setState(() => _speechAvailable = available);
+  }
+
+  void _snack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message), duration: const Duration(seconds: 6)));
+  }
+
+  /// Fin d'écoute (silence, délai écoulé, arrêt) : le bouton micro revient à
+  /// l'état normal — avant, il restait rouge indéfiniment.
+  void _onSpeechStatus(String status) {
+    if ((status == 'done' || status == 'notListening') && mounted && _listening) {
+      setState(() => _listening = false);
+    }
+  }
+
+  /// Chaque erreur de reconnaissance est expliquée à l'utilisateur (avant,
+  /// elles étaient ignorées : rien ne se passait, sans message).
+  void _onSpeechError(dynamic error) {
+    final msg = (error?.errorMsg as String?) ?? '';
+    debugPrint('SpeechToText error: $msg');
+    if (!mounted) return;
+    setState(() => _listening = false);
+    final fr = _fr(context);
+    _snack(switch (msg) {
+      'error_no_match' || 'error_speech_timeout' => fr
+          ? "Je n'ai rien entendu. Parlez près du micro. Sur l'émulateur, activez d'abord le micro de l'ordinateur (⋯ > Microphone > « Virtual microphone uses host audio input »)."
+          : "I didn't hear anything. Speak close to the mic. On the emulator, first enable the computer's mic (⋯ > Microphone > \"Virtual microphone uses host audio input\").",
+      'error_network' || 'error_network_timeout' || 'error_server' || 'error_server_disconnected' => fr
+          ? "La reconnaissance vocale a besoin d'une connexion internet."
+          : "Speech recognition needs an internet connection.",
+      'error_language_not_supported' || 'error_language_unavailable' => fr
+          ? "Langue non installée pour la dictée : Paramètres > Système > Langues > Reconnaissance vocale, ajoutez le français."
+          : "Language not installed for dictation: Settings > System > Languages > Speech recognition, add the language.",
+      'error_audio' || 'error_audio_error' || 'error_permission' || 'error_insufficient_permissions' => fr
+          ? "Micro inaccessible. Autorisez le micro pour EcoLindk dans les réglages du téléphone."
+          : "Microphone unavailable. Allow microphone access for EcoLindk in the phone settings.",
+      'error_busy' || 'error_recognizer_busy' => fr
+          ? "La reconnaissance vocale est occupée. Réessayez dans un instant."
+          : "Speech recognition is busy. Try again in a moment.",
+      _ => fr ? "Dictée impossible ($msg). Réessayez." : "Dictation failed ($msg). Try again.",
+    });
+  }
+
+  /// Langue de dictée réellement installée sur l'appareil : `fr_FR` si
+  /// possible, sinon n'importe quelle variante du français (ou de
+  /// l'anglais), sinon la langue du système. Demander une langue absente
+  /// faisait échouer la dictée en silence.
+  Future<String?> _pickSpeechLocale(bool fr) async {
+    try {
+      final locales = await _speech.locales();
+      final ids = locales.map((l) => l.localeId).toList();
+      final wanted = fr ? 'fr_FR' : 'en_US';
+      final prefix = fr ? 'fr' : 'en';
+      if (ids.contains(wanted)) return wanted;
+      final variant = ids.where((id) => id.toLowerCase().startsWith(prefix)).firstOrNull;
+      if (variant != null) return variant;
+      return (await _speech.systemLocale())?.localeId;
+    } catch (_) {
+      return fr ? 'fr_FR' : 'en_US';
+    }
   }
 
   /// Texte -> voix pour les réponses de l'assistant (demande explicite) —
@@ -91,8 +168,13 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
     _tts.setCancelHandler(() {
       if (mounted) setState(() => _speakingIndex = null);
     });
-    _tts.setErrorHandler((_) {
-      if (mounted) setState(() => _speakingIndex = null);
+    _tts.setErrorHandler((message) {
+      debugPrint('FlutterTts error: $message');
+      if (!mounted) return;
+      setState(() => _speakingIndex = null);
+      _snack(_fr(context)
+          ? "Lecture vocale interrompue ($message)."
+          : "Text-to-speech stopped ($message).");
     });
   }
 
@@ -105,10 +187,42 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
       if (mounted) setState(() => _speakingIndex = null);
       return;
     }
+    final fr = _fr(context);
     await _tts.stop();
-    await _tts.setLanguage(_fr(context) ? 'fr-FR' : 'en-US');
+    final language = await _pickTtsLanguage(fr);
+    if (!mounted) return;
+    if (language == null) {
+      // Voix absente : on lit quand même avec la voix par défaut, en
+      // prévenant (avant, rien ne se passait).
+      _snack(fr
+          ? "Voix française non installée : Paramètres > Système > Langues > Synthèse vocale > Moteur Google > Installer les données vocales."
+          : "Voice not installed: Settings > System > Languages > Text-to-speech > Google engine > Install voice data.");
+    } else {
+      await _tts.setLanguage(language);
+    }
     setState(() => _speakingIndex = i);
-    await _tts.speak(text);
+    // Les réponses de Gemini contiennent du Markdown (**gras**, listes) :
+    // on retire ces symboles pour qu'ils ne soient pas prononcés.
+    final result = await _tts.speak(text.replaceAll(RegExp(r'[*_#`>]'), ''));
+    if (result != 1 && mounted) {
+      setState(() => _speakingIndex = null);
+      _snack(fr
+          ? "Lecture vocale impossible. Vérifiez le volume et le moteur de synthèse vocale du téléphone."
+          : "Text-to-speech failed. Check the volume and the phone's text-to-speech engine.");
+    }
+  }
+
+  /// Voix installée pour la langue de l'app (fr-FR, sinon autre variante du
+  /// français ; en-US pour l'anglais), `null` si aucune.
+  Future<String?> _pickTtsLanguage(bool fr) async {
+    final candidates = fr ? ['fr-FR', 'fr-CA', 'fr-BE', 'fr'] : ['en-US', 'en-GB', 'en'];
+    for (final lang in candidates) {
+      try {
+        final ok = await _tts.isLanguageAvailable(lang);
+        if (ok == true || ok == 1) return lang;
+      } catch (_) {}
+    }
+    return null;
   }
 
   @override
@@ -120,24 +234,6 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
     _tts.stop();
     super.dispose();
   }
-
-  // Cadre STRICTEMENT le sujet (demande explicite : "il doit répondre aux
-  // questions qui cadrent uniquement avec le recyclage, l'environnement et
-  // mon app") — refus explicite plutôt qu'une simple invitation à revenir
-  // au sujet, pour que Gemini décline vraiment les questions hors-cadre
-  // (culture générale, actualité, code, autres apps...) au lieu d'y répondre
-  // "en passant" avant de se recentrer.
-  String _systemInstruction(bool fr) => '''
-You are the in-app AI assistant of EcoLindk, a recyclable-waste valorisation platform.
-Your ONLY allowed topics are: recycling and waste sorting, the environment/sustainability,
-and how to use the EcoLindk app (its supported waste categories — plastic, paper/cardboard,
-glass, metal —, posting a collection request, points, rewards, the collection process).
-You MUST refuse any question outside these three topics, even if you know the answer —
-do not answer it "briefly" before redirecting. Politely decline in one short sentence and
-invite the user to ask about recycling, the environment, or the app instead.
-Keep answers short, friendly, and practical. Reply in ${fr ? 'French' : 'English'}, matching
-the user's language.
-''';
 
   Future<void> _send() async {
     final fr = _fr(context);
@@ -165,7 +261,10 @@ the user's language.
       final reply = await _gemini.chat(
         history: history,
         message: text,
-        systemInstruction: _systemInstruction(fr),
+        // Les consignes du modèle (sujets autorisés, rôle, langue) sont
+        // fixées par le serveur, voir backend/src/prompts.js.
+        forCollector: widget.forCollector,
+        french: fr,
       );
       if (!mounted) return;
       setState(() {
@@ -204,7 +303,17 @@ the user's language.
   }
 
   Future<void> _toggleListening() async {
-    if (!_speechAvailable) return;
+    final fr = _fr(context);
+    if (!_speechAvailable) {
+      // Nouvelle tentative (permission accordée entre-temps, par exemple).
+      await _initSpeech();
+      if (!_speechAvailable) {
+        _snack(fr
+            ? "Dictée indisponible : autorisez le micro pour EcoLindk et vérifiez qu'un service de reconnaissance vocale (Google) est installé."
+            : "Dictation unavailable: allow microphone access for EcoLindk and make sure a speech recognition service (Google) is installed.");
+        return;
+      }
+    }
     if (_listening) {
       _stopListening();
       return;
@@ -213,18 +322,29 @@ the user's language.
       await _tts.stop();
       _speakingIndex = null;
     }
+    final localeId = await _pickSpeechLocale(fr);
+    if (!mounted) return;
     setState(() => _listening = true);
-    await _speech.listen(
-      onResult: (result) {
-        setState(() {
-          _textController.text = result.recognizedWords;
-          _textController.selection =
-              TextSelection.collapsed(offset: _textController.text.length);
-        });
-      },
-      listenOptions:
-          stt.SpeechListenOptions(localeId: _fr(context) ? 'fr_FR' : 'en_US'),
-    );
+    try {
+      await _speech.listen(
+        onResult: (result) {
+          if (!mounted) return;
+          setState(() {
+            _textController.text = result.recognizedWords;
+            _textController.selection =
+                TextSelection.collapsed(offset: _textController.text.length);
+          });
+        },
+        localeId: localeId,
+        listenFor: const Duration(seconds: 30),
+        pauseFor: const Duration(seconds: 4),
+        listenOptions: stt.SpeechListenOptions(partialResults: true, cancelOnError: true),
+      );
+    } catch (e) {
+      debugPrint('SpeechToText.listen failed: $e');
+      if (mounted) setState(() => _listening = false);
+      _snack(fr ? "Impossible de démarrer la dictée." : "Couldn't start dictation.");
+    }
   }
 
   void _stopListening() {
@@ -246,9 +366,12 @@ the user's language.
   bool _fr(BuildContext context) => appLanguage.value == AppLanguage.fr;
 
   String _errorMessage(String code, bool fr) => switch (code) {
-        'no-api-key' => fr
-            ? "Assistant IA non configuré (clé API manquante)."
-            : "AI assistant not configured (missing API key).",
+        'not-configured' => fr
+            ? "Assistant IA indisponible : Firebase AI Logic n'est pas encore activé pour ce projet."
+            : "AI assistant unavailable: Firebase AI Logic isn't enabled for this project yet.",
+        'rate-limited' => fr
+            ? "Trop de questions d'affilée. Réessayez dans une minute."
+            : "Too many questions in a row. Try again in a minute.",
         'timeout' => fr ? "La réponse a pris trop de temps." : "The response took too long.",
         'network' => fr ? "Problème de connexion réseau." : "Network connection problem.",
         _ => fr ? "Échec de la requête. Réessayez." : "Request failed. Please retry.",
@@ -489,7 +612,7 @@ the user's language.
               ),
             ),
           ),
-          if (_speechAvailable) ...[
+          ...[
             const SizedBox(width: 8),
             GestureDetector(
               onTap: _toggleListening,

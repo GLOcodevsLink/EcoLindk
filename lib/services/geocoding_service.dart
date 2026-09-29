@@ -98,4 +98,50 @@ class GeocodingService {
       displayName: first['display_name'] as String? ?? query,
     );
   }
+
+  /// Géocodage inverse (coordonnées → quartier et ville), via Nominatim —
+  /// UNE requête par post publié (voir CollectionService.createRequest),
+  /// jamais au fil de la frappe. `null` si rien n'est trouvé ou en cas
+  /// d'erreur : ce n'est qu'un complément à la distance pour le ciblage des
+  /// notifications, jamais bloquant.
+  Future<ReverseGeocodeResult?> reverse(double latitude, double longitude) async {
+    final uri = Uri.parse('https://nominatim.openstreetmap.org/reverse').replace(queryParameters: {
+      'lat': '$latitude',
+      'lon': '$longitude',
+      'format': 'jsonv2',
+      'zoom': '16', // niveau quartier
+      'addressdetails': '1',
+    });
+    try {
+      final response = await _client.get(uri, headers: const {
+        'User-Agent': _userAgent,
+        'Accept-Language': 'fr',
+      }).timeout(_timeout);
+      if (response.statusCode != 200) return null;
+      final json = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+      final address = json['address'] as Map<String, dynamic>?;
+      if (address == null) return null;
+      String? first(List<String> keys) {
+        for (final k in keys) {
+          final v = (address[k] as String?)?.trim();
+          if (v != null && v.isNotEmpty) return v;
+        }
+        return null;
+      }
+
+      final neighborhood = first(['suburb', 'neighbourhood', 'quarter', 'city_district', 'village', 'hamlet']);
+      final city = first(['city', 'town', 'municipality', 'county']);
+      if (neighborhood == null && city == null) return null;
+      return ReverseGeocodeResult(neighborhood: neighborhood, city: city);
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+/// Quartier et ville d'un point (voir [GeocodingService.reverse]).
+class ReverseGeocodeResult {
+  final String? neighborhood;
+  final String? city;
+  const ReverseGeocodeResult({this.neighborhood, this.city});
 }

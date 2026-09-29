@@ -37,6 +37,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   late final String _conversationId =
       _messagingService.conversationIdFor(widget.meUid, widget.otherUid);
+  late final Stream<List<ChatMessage>> _messages =
+      _messagingService.watchMessages(_conversationId);
 
   @override
   void initState() {
@@ -66,6 +68,18 @@ class _ChatScreenState extends State<ChatScreen> {
         toName: widget.otherName,
         text: text,
       );
+    } catch (e) {
+      // Jamais d'échec silencieux : le message tapé est rendu à
+      // l'utilisateur pour qu'il puisse réessayer.
+      debugPrint('ChatScreen._send failed: $e');
+      if (mounted) {
+        if (_textController.text.isEmpty) _textController.text = text;
+        final fr = appLanguage.value == AppLanguage.fr;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(fr
+                ? "Message non envoyé. Vérifiez votre connexion et réessayez."
+                : "Message not sent. Check your connection and try again.")));
+      }
     } finally {
       if (mounted) setState(() => _sending = false);
     }
@@ -91,7 +105,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 _header(context),
                 Expanded(
                   child: StreamBuilder<List<ChatMessage>>(
-                    stream: _messagingService.watchMessages(_conversationId),
+                    stream: _messages,
                     builder: (context, snap) {
                       if (snap.connectionState == ConnectionState.waiting) {
                         return const Center(

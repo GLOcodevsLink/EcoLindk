@@ -2,15 +2,20 @@ import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import '../../core/l10n/app_language.dart';
 import '../../core/theme.dart';
+import '../../models/collection_request.dart';
+import '../../services/auth_service.dart';
 import '../../services/collection_service.dart';
 import '../../widgets/wp_common.dart';
+import 'collection_review_screen.dart';
 import 'request_status_screen.dart';
 
 /// Bouton "Scan" central de la barre de navigation (voir WasteProviderShell)
-/// — lit un QR code EcoLindk (`ecolindk:collection:<id>`, voir
-/// RequestStatusScreen) et ouvre directement le suivi de la collecte
-/// correspondante. Signale clairement les codes non reconnus plutôt que de
-/// ne rien faire.
+/// — lit un QR code EcoLindk (`ecolindk:collection:<id>:<code>`, affiché
+/// par le collecteur une fois son formulaire soumis). Si c'est le
+/// formulaire en attente d'une demande du Fournisseur, ouvre
+/// [CollectionReviewScreen] pour l'accepter ou le refuser — c'est le SEUL
+/// accès à ce formulaire. Sinon, ouvre le suivi de la collecte. Signale
+/// clairement les codes non reconnus ou périmés plutôt que de ne rien faire.
 class ScanScreen extends StatefulWidget {
   const ScanScreen({super.key});
 
@@ -37,7 +42,11 @@ class _ScanScreenState extends State<ScanScreen> {
       setState(() => _error = fr ? "QR code non reconnu." : "Unrecognized QR code.");
       return;
     }
-    final requestId = raw.substring(prefix.length);
+    // `<id>:<code>` — le code change à chaque formulaire soumis par le
+    // collecteur (voir CollectionRequest.qrPayload).
+    final parts = raw.substring(prefix.length).split(':');
+    final requestId = parts.first;
+    final scanCode = parts.length > 1 ? parts[1] : '';
     setState(() {
       _handling = true;
       _error = null;
@@ -50,6 +59,23 @@ class _ScanScreenState extends State<ScanScreen> {
           _handling = false;
           _error = fr ? "Cette demande n'existe plus." : "This request no longer exists.";
         });
+        return;
+      }
+      final isMine = request.householdUid == AuthService().currentUser?.uid;
+      if (isMine && request.status == RequestStatus.inProgress) {
+        if (scanCode.isEmpty || scanCode != request.scanCode) {
+          setState(() {
+            _handling = false;
+            _error = fr
+                ? "Ce QR code n'est plus valable. Demandez au collecteur d'afficher le code actuel."
+                : "This QR code is no longer valid. Ask the collector to show the current code.";
+          });
+          return;
+        }
+        // Seul chemin vers le formulaire à accepter/refuser.
+        Navigator.of(context).pushReplacement(MaterialPageRoute(
+          builder: (_) => CollectionReviewScreen(requestId: request.id, scanCode: scanCode),
+        ));
         return;
       }
       Navigator.of(context).pushReplacement(

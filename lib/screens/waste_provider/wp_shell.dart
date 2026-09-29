@@ -6,6 +6,7 @@ import '../../core/l10n/app_language.dart';
 import '../../core/l10n/strings.dart';
 import '../../core/theme.dart';
 import '../../models/collection_request.dart';
+import '../../models/household_stats.dart';
 import '../../services/auth_service.dart';
 import '../../services/collection_service.dart';
 import '../../services/messaging_service.dart';
@@ -218,6 +219,12 @@ class _WpDashboardTabState extends State<_WpDashboardTab> {
   final _authService = AuthService();
   final _collectionService = CollectionService();
   late final Future<DocumentSnapshot<Map<String, dynamic>>?> _userDocFuture;
+
+  /// Tous les posts du Fournisseur, quel que soit leur statut — source des
+  /// statistiques "Mon impact" (voir [HouseholdStats]). Créé une seule fois
+  /// pour ne pas relancer la requête Firestore à chaque rafraîchissement.
+  late final Stream<List<CollectionRequest>> _allRequests =
+      _collectionService.watchAllRequests(_authService.currentUser?.uid ?? '');
 
   @override
   void initState() {
@@ -447,21 +454,18 @@ class _WpDashboardTabState extends State<_WpDashboardTab> {
                         const SizedBox.shrink()
                       else
                         StreamBuilder<List<CollectionRequest>>(
-                          stream: _collectionService.watchHistory(uid),
-                          builder: (context, historySnap) {
-                            final completed = (historySnap.data ?? const [])
-                                .where(
-                                    (r) => r.status == RequestStatus.completed)
-                                .toList();
-                            final totalKg = completed.fold<double>(
-                                0, (total, r) => total + (r.weightKg ?? 0));
-                            return _CollectedPackagesBox(
+                          stream: _allRequests,
+                          builder: (context, snap) {
+                            if (snap.hasError) {
+                              return InlineErrorBanner(
+                                  message: fr
+                                      ? "Impossible de charger vos statistiques."
+                                      : "Couldn't load your statistics.");
+                            }
+                            return _StatsBox(
                               fr: fr,
-                              collectesLabel: fr ? "Collectes" : "Collections",
                               valorisedLabel: s.wasteValorised,
-                              collectesCount: completed.length,
-                              totalKg: totalKg,
-                              completed: completed,
+                              stats: HouseholdStats.from(snap.data ?? const []),
                             );
                           },
                         ),
@@ -511,65 +515,28 @@ class _WpDashboardTabState extends State<_WpDashboardTab> {
   }
 }
 
-/// Grande boîte "Colis collectés" : regroupe les deux statistiques (Mes
-/// collectes / Déchets valorisés) et un petit graphique hebdomadaire —
-/// pour chaque jour de dimanche à samedi, vert si au moins une collecte a
-/// été complétée ce jour-là (voir [completed]), jaune sinon (rien
-/// collecté ce jour — pas un troisième état inventé, juste ces deux
-/// couleurs, comme demandé). Uniquement des données réelles : un jour
-/// futur de la semaine en cours est simplement encore "jaune" (rien
-/// collecté pour l'instant), jamais présenté comme "collecté".
-class _CollectedPackagesBox extends StatelessWidget {
+/// "Mon impact" : vraies statistiques du Fournisseur, calculées sur TOUS
+/// ses posts (voir [HouseholdStats]) — chiffres clés, répartition de ses
+/// posts par statut, kg collectés sur les 7 derniers jours et par
+/// catégorie. Aucune valeur inventée : sans collecte, les barres restent à
+/// zéro et un message l'indique.
+class _StatsBox extends StatelessWidget {
   final bool fr;
-  final String collectesLabel;
   final String valorisedLabel;
-  final int collectesCount;
-  final double totalKg;
-  final List<CollectionRequest> completed;
+  final HouseholdStats stats;
 
-  const _CollectedPackagesBox({
-    required this.fr,
-    required this.collectesLabel,
-    required this.valorisedLabel,
-    required this.collectesCount,
-    required this.totalKg,
-    required this.completed,
-  });
+  const _StatsBox({required this.fr, required this.valorisedLabel, required this.stats});
 
-  // Vert plus doux que le vert "logo" habituel (demande explicite, puis
-  // adouci une seconde fois sur retour utilisateur) — le dégradé plus
-  // soutenu de la carte "Mes points" reste réservé à elle seule, jamais
-  // réutilisé ailleurs.
-  static const _collectedColor = Color(0xFFABD89E);
-  static const _pendingColor = AppColors.amber;
+  static const _collectedColor = Color(0xFF3FA66B);
+  static const _inProgressColor = AppColors.amber;
+  static const _cancelledColor = Color(0xFFBFC6C2);
+
+  static String _kg(double v) =>
+      "${v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(1)} kg";
 
   @override
   Widget build(BuildContext context) {
-    final now = DateTime.now();
-    final startOfWeek = DateTime(now.year, now.month, now.day)
-        .subtract(Duration(days: now.weekday % 7)); // dimanche de cette semaine
-
-    bool hasRealCollectionOn(DateTime day) => completed.any((r) {
-          final at = r.completedAt;
-          return at != null &&
-              at.year == day.year &&
-              at.month == day.month &&
-              at.day == day.day;
-        });
-
-    // Part "collecté" (verte) de la barre de chaque jour. Un jour avec une
-    // vraie collecte complétée (donnée réelle) est entièrement vert. Les
-    // autres jours sont une simulation assumée (demande explicite, faute
-    // d'assez d'historique pour l'instant) : une fraction stable — dérivée
-    // de la date, jamais recalculée au hasard à chaque rebuild — pour que
-    // le graphique se lise comme une vraie statistique plutôt qu'un simple
-    // statut plein/vide par jour.
-    double greenFraction(DateTime day) {
-      if (hasRealCollectionOn(day)) return 1.0;
-      final seed = day.year * 10000 + day.month * 100 + day.day;
-      return math.Random(seed).nextDouble() * 0.75;
-    }
-
+    final s = stats;
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
@@ -577,96 +544,110 @@ class _CollectedPackagesBox extends StatelessWidget {
         borderRadius: BorderRadius.circular(22),
         border: Border.all(color: AppColors.line, width: 1.2),
         boxShadow: [
-          BoxShadow(
-              color: Colors.black.withOpacity(0.04),
-              blurRadius: 12,
-              offset: const Offset(0, 4)),
+          BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 12, offset: const Offset(0, 4)),
         ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(fr ? "Colis collectés" : "Collected packages",
-              style: TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w800,
-                  color: AppColors.heading)),
+          // ---- Chiffres clés
+          Row(
+            children: [
+              Expanded(child: _stat(RemixIcons.truck_fill, "${s.completedCount}", fr ? "Collectes" : "Collections")),
+              const SizedBox(width: 10),
+              Expanded(child: _stat(RemixIcons.recycle_fill, _kg(s.totalKg), valorisedLabel)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(child: _stat(RemixIcons.coins_fill, "${s.totalPoints} P", fr ? "Points gagnés" : "Points earned")),
+              const SizedBox(width: 10),
+              Expanded(child: _stat(RemixIcons.time_fill, "${s.inProgressCount}", fr ? "Posts en cours" : "Posts in progress")),
+            ],
+          ),
+          const SizedBox(height: 22),
+
+          // ---- Mes posts par statut
+          _title(fr ? "Mes posts" : "My posts"),
           const SizedBox(height: 14),
           Row(
             children: [
-              Expanded(
-                  child: _statCardStyle(RemixIcons.truck_fill,
-                      "$collectesCount", collectesLabel)),
-              const SizedBox(width: 10),
-              Expanded(
-                  child: _statCardStyle(RemixIcons.recycle_fill,
-                      "${totalKg.toStringAsFixed(1)} kg", valorisedLabel)),
-            ],
-          ),
-          const SizedBox(height: 20),
-          Text(fr ? "Cette semaine" : "This week",
-              style: TextStyle(
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w800,
-                  color: AppColors.heading)),
-          const SizedBox(height: 14),
-          // Donut à 2 statuts (collecté / à collecter) — remplace l'ancien
-          // graphique en barres par jour (demande explicite) : même deux
-          // couleurs, mais agrégées sur la semaine plutôt que jour par jour.
-          Builder(builder: (context) {
-            final fractions = List.generate(
-                7, (i) => greenFraction(startOfWeek.add(Duration(days: i))));
-            final avg = fractions.reduce((a, b) => a + b) / fractions.length;
-            return Center(
-              child: SizedBox(
-                width: 168,
-                height: 168,
+              SizedBox(
+                width: 132,
+                height: 132,
                 child: CustomPaint(
-                  painter: _DonutPainter(
-                      collectedFraction: avg,
-                      collectedColor: _collectedColor,
-                      pendingColor: _pendingColor),
+                  painter: _DonutPainter(segments: [
+                    (s.completedCount.toDouble(), _collectedColor),
+                    (s.inProgressCount.toDouble(), _inProgressColor),
+                    (s.cancelledCount.toDouble(), _cancelledColor),
+                  ]),
                   child: Center(
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Text("${(avg * 100).round()}%",
-                            style: TextStyle(
-                                fontSize: 26,
-                                fontWeight: FontWeight.w800,
-                                color: AppColors.heading)),
-                        Text(fr ? "collecté" : "collected",
-                            style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w700,
-                                color: AppColors.textGray)),
+                        Text(s.totalPosts == 0 ? "—" : "${(s.completionRate * 100).round()}%",
+                            style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: AppColors.heading)),
+                        Text(fr ? "collectés" : "collected",
+                            style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w700, color: AppColors.textGray)),
                       ],
                     ),
                   ),
                 ),
               ),
-            );
-          }),
-          const SizedBox(height: 14),
-          Row(
-            children: [
-              _legendDot(_collectedColor, fr ? "Collecté" : "Collected"),
-              const SizedBox(width: 16),
-              _legendDot(_pendingColor, fr ? "À collecter" : "Not collected"),
+              const SizedBox(width: 18),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _legendRow(_collectedColor, fr ? "Collectés" : "Collected", s.completedCount),
+                    _legendRow(_inProgressColor, fr ? "En cours" : "In progress", s.inProgressCount),
+                    _legendRow(_cancelledColor, fr ? "Annulés" : "Cancelled", s.cancelledCount),
+                    const Divider(height: 14),
+                    _legendRow(null, fr ? "Total" : "Total", s.totalPosts, bold: true),
+                  ],
+                ),
+              ),
             ],
           ),
+          const SizedBox(height: 24),
+
+          // ---- 7 derniers jours
+          Row(
+            children: [
+              Expanded(child: _title(fr ? "7 derniers jours" : "Last 7 days")),
+              Text(_kg(s.last7Days.fold(0.0, (t, d) => t + d.kg)),
+                  style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w800, color: AppColors.greenDeep)),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _weekBars(),
+          if (s.maxDailyKg == 0) ...[
+            const SizedBox(height: 8),
+            Text(
+                fr ? "Aucune collecte terminée ces 7 derniers jours." : "No completed pickup in the last 7 days.",
+                style: TextStyle(fontSize: 11.5, color: AppColors.textGray)),
+          ],
+
+          // ---- Par catégorie
+          if (s.kgByCategory.isNotEmpty) ...[
+            const SizedBox(height: 24),
+            _title(fr ? "Par catégorie" : "By category"),
+            const SizedBox(height: 12),
+            ...s.kgByCategory.map((e) => _categoryBar(e.key, e.value, s.totalKg)),
+          ],
         ],
       ),
     );
   }
 
-  Widget _statCardStyle(IconData icon, String value, String label) {
+  Widget _title(String text) =>
+      Text(text, style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w800, color: AppColors.heading));
+
+  Widget _stat(IconData icon, String value, String label) {
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(14),
-      ),
+      decoration: BoxDecoration(color: AppColors.surface, borderRadius: BorderRadius.circular(14)),
       child: Row(
         children: [
           BoxLogo(icon, size: 34),
@@ -676,17 +657,13 @@ class _CollectedPackagesBox extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(value,
-                    style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w800,
-                        color: AppColors.heading)),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.heading)),
                 Text(label,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                        fontSize: 9.5,
-                        color: AppColors.textGray,
-                        fontWeight: FontWeight.w700)),
+                    style: TextStyle(fontSize: 9.5, color: AppColors.textGray, fontWeight: FontWeight.w700)),
               ],
             ),
           ),
@@ -695,64 +672,160 @@ class _CollectedPackagesBox extends StatelessWidget {
     );
   }
 
-  Widget _legendDot(Color color, String label) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-            width: 10,
-            height: 10,
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
-        const SizedBox(width: 6),
-        Text(label,
-            style: TextStyle(
-                fontSize: 11,
-                color: AppColors.textGray,
-                fontWeight: FontWeight.w700)),
-      ],
+  Widget _legendRow(Color? color, String label, int count, {bool bold = false}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          if (color != null)
+            Container(width: 10, height: 10, decoration: BoxDecoration(color: color, shape: BoxShape.circle))
+          else
+            const SizedBox(width: 10),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(label,
+                style: TextStyle(
+                    fontSize: 12, color: bold ? AppColors.heading : AppColors.textGray, fontWeight: FontWeight.w700)),
+          ),
+          Text("$count",
+              style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w800, color: AppColors.heading)),
+        ],
+      ),
+    );
+  }
+
+  /// Une barre par jour, hauteur proportionnelle aux kg collectés ce
+  /// jour-là ; aujourd'hui en dernier et mis en évidence.
+  Widget _weekBars() {
+    final days = stats.last7Days;
+    final maxKg = stats.maxDailyKg;
+    final initials = fr ? const ['L', 'M', 'M', 'J', 'V', 'S', 'D'] : const ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+    const barArea = 96.0;
+    return SizedBox(
+      height: barArea + 38,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          for (var i = 0; i < days.length; i++)
+            Expanded(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  if (days[i].kg > 0)
+                    Text(_kg(days[i].kg).replaceAll(' kg', ''),
+                        style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w800, color: AppColors.greenDeep)),
+                  const SizedBox(height: 3),
+                  AnimatedContainer(
+                    duration: const Duration(milliseconds: 400),
+                    curve: Curves.easeOutCubic,
+                    width: 18,
+                    height: maxKg == 0 ? 4 : math.max(4, barArea * days[i].kg / maxKg),
+                    decoration: BoxDecoration(
+                      gradient: days[i].kg > 0 ? AppColors.buttonGradient : null,
+                      color: days[i].kg > 0 ? null : AppColors.line,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(initials[days[i].day.weekday - 1],
+                      style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: i == days.length - 1 ? FontWeight.w900 : FontWeight.w600,
+                          color: i == days.length - 1 ? AppColors.greenDeep : AppColors.textGray)),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _categoryBar(WasteCategory c, double kg, double total) {
+    final share = total == 0 ? 0.0 : kg / total;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        children: [
+          Container(
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(gradient: c.gradient, borderRadius: BorderRadius.circular(9)),
+            child: Icon(c.icon, color: Colors.white, size: 16),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(c.label(fr),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.heading)),
+                    ),
+                    Text("${_kg(kg)} · ${(share * 100).round()}%",
+                        style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w800, color: c.color)),
+                  ],
+                ),
+                const SizedBox(height: 5),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(999),
+                  child: LinearProgressIndicator(
+                    value: share,
+                    minHeight: 6,
+                    color: c.color,
+                    backgroundColor: c.color.withValues(alpha: 0.12),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
 
-/// Donut "Cette semaine" à 2 statuts (collecté / à collecter) — remplace
-/// l'ancien graphique en barres par jour (demande explicite). Deux arcs
-/// pleins (pas de trait arrondi : c'est un cercle complet à 2 parts, donc
-/// des bouts francs, pas des bouts ronds qui se chevaucheraient).
+/// Anneau à plusieurs parts (valeur, couleur). Sans aucune valeur, un
+/// anneau gris neutre.
 class _DonutPainter extends CustomPainter {
-  final double collectedFraction; // 0..1
-  final Color collectedColor;
-  final Color pendingColor;
-  const _DonutPainter({
-    required this.collectedFraction,
-    required this.collectedColor,
-    required this.pendingColor,
-  });
+  final List<(double, Color)> segments;
+  const _DonutPainter({required this.segments});
 
   @override
   void paint(Canvas canvas, Size size) {
     final center = size.center(Offset.zero);
     final radius = size.shortestSide / 2;
-    const strokeWidth = 22.0;
-    final rect =
-        Rect.fromCircle(center: center, radius: radius - strokeWidth / 2);
-    const start = -math.pi / 2; // 12h
-    final collectedSweep = 2 * math.pi * collectedFraction.clamp(0.0, 1.0);
-
-    final base = Paint()
+    const strokeWidth = 18.0;
+    final rect = Rect.fromCircle(center: center, radius: radius - strokeWidth / 2);
+    final paint = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = strokeWidth
       ..strokeCap = StrokeCap.butt;
 
-    canvas.drawArc(
-        rect, start, collectedSweep, false, base..color = collectedColor);
-    canvas.drawArc(rect, start + collectedSweep, 2 * math.pi - collectedSweep,
-        false, base..color = pendingColor);
+    final total = segments.fold<double>(0, (t, s) => t + s.$1);
+    if (total == 0) {
+      canvas.drawArc(rect, 0, 2 * math.pi, false, paint..color = AppColors.line);
+      return;
+    }
+    var start = -math.pi / 2; // 12h
+    for (final (value, color) in segments) {
+      if (value <= 0) continue;
+      final sweep = 2 * math.pi * value / total;
+      canvas.drawArc(rect, start, sweep, false, paint..color = color);
+      start += sweep;
+    }
   }
 
   @override
-  bool shouldRepaint(covariant _DonutPainter oldDelegate) =>
-      oldDelegate.collectedFraction != collectedFraction ||
-      oldDelegate.collectedColor != collectedColor ||
-      oldDelegate.pendingColor != pendingColor;
+  bool shouldRepaint(covariant _DonutPainter oldDelegate) {
+    if (oldDelegate.segments.length != segments.length) return true;
+    for (var i = 0; i < segments.length; i++) {
+      if (oldDelegate.segments[i] != segments[i]) return true;
+    }
+    return false;
+  }
 }
 

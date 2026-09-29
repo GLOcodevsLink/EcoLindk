@@ -16,16 +16,39 @@ void main() {
       expect('10+ kg'.weightBoundsKg, (10, double.infinity));
     });
 
-    test('quantité libre : tolérance de ±40 %', () async {
-      final (min, max) = '10 kg'.weightBoundsKg;
-      expect(min, closeTo(6, 1e-9));
-      expect(max, closeTo(14, 1e-9));
+    test('quantité libre : tolérance de ±5 kg', () async {
+      final (min, max) = '15 kg'.weightBoundsKg;
+      expect(min, closeTo(10, 1e-9));
+      expect(max, closeTo(20, 1e-9));
     });
 
-    test('accepte la virgule décimale', () async {
+    test('accepte la virgule décimale, borne basse jamais négative', () async {
       final (min, max) = '2,5 kg'.weightBoundsKg;
-      expect(min, closeTo(1.5, 1e-9));
-      expect(max, closeTo(3.5, 1e-9));
+      expect(min, 0);
+      expect(max, closeTo(7.5, 1e-9));
+    });
+  });
+
+  group('acceptsCollectedWeight', () {
+    test('écart de plus de 5 kg refusé, 5 kg pile accepté', () async {
+      expect('15 kg'.acceptsCollectedWeight(15), isTrue);
+      expect('15 kg'.acceptsCollectedWeight(20), isTrue);
+      expect('15 kg'.acceptsCollectedWeight(10), isTrue);
+      expect('6 kg'.acceptsCollectedWeight(11), isTrue);
+      expect('6.2 kg'.acceptsCollectedWeight(1.2), isTrue);
+      expect('15 kg'.acceptsCollectedWeight(20.1), isFalse);
+      expect('15 kg'.acceptsCollectedWeight(9.9), isFalse);
+      expect('15 kg'.acceptsCollectedWeight(40), isFalse);
+    });
+
+    test('poids nul ou négatif refusé', () async {
+      expect('3 kg'.acceptsCollectedWeight(0), isFalse);
+      expect('3 kg'.acceptsCollectedWeight(-1), isFalse);
+    });
+
+    test('anciens paliers : bornes inclusives', () async {
+      expect('1 - 5 kg'.acceptsCollectedWeight(5), isTrue);
+      expect('1 - 5 kg'.acceptsCollectedWeight(6), isFalse);
     });
 
     test('texte illisible ou zéro : aucune borne', () async {

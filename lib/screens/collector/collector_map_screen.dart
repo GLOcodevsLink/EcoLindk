@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
+import '../../widgets/waste_photo_image.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' as ll;
+import '../../core/geo_config.dart';
 import '../../core/l10n/app_language.dart';
 import '../../core/theme.dart';
 import '../../models/collection_request.dart';
-import '../../services/auth_service.dart';
 import '../../services/collection_service.dart';
 import '../../services/geo_helper.dart';
+import '../../services/nearby_posts.dart';
 import '../../widgets/osm_map_preview.dart';
 import '../../widgets/wp_common.dart';
 import 'collector_request_preview_screen.dart';
@@ -18,15 +20,17 @@ import 'collector_request_preview_screen.dart';
 /// infos principales) — taper une Marker OU un élément de la liste ouvre la
 /// même page de détails (CollectorRequestPreviewScreen).
 ///
-/// Bonus "proche de moi" : DEUX sources de position comptent (demande
-/// explicite), pas seulement le GPS — le point de référence géocodé de la
-/// "zone de collecte" déclarée dans le profil (voir
-/// CollectionService.getCollectorLocation/ProfileScreen) ET la position GPS
-/// réelle de l'appareil au moment où le Collecteur consulte cet écran (voir
-/// GeoHelper, redemandée à chaque ouverture — jamais mise en cache d'une
-/// session à l'autre). Le filtre optionnel ne garde que les demandes à moins
-/// de 10 km de L'UNE OU L'AUTRE de ces deux positions, triées par distance à
-/// la plus proche des deux.
+/// Filtre "Autour de moi" : uniquement la position GPS ACTUELLE de
+/// l'appareil (redemandée à chaque ouverture), jamais les zones de collecte
+/// du profil — celles-ci ne servent qu'aux notifications (voir
+/// CollectorZoneService). Un collecteur hors de ses zones trouve donc les
+/// posts autour de lui, dans un rayon de [GeoConfig.gpsSearchRadiusKm] km,
+/// triés du plus proche au plus loin (voir postsAroundPosition).
+///
+/// La carte se cadre d'abord sur les POSTES disponibles, jamais sur le seul
+/// GPS de l'appareil : un GPS éloigné (ex. émulateur réglé par défaut aux
+/// USA) laisserait sinon tous les postes hors de l'écran. Le bouton de
+/// recadrage ramène la vue sur les postes à tout moment.
 class CollectorMapScreen extends StatefulWidget {
   const CollectorMapScreen({super.key});
 
@@ -39,21 +43,22 @@ class _CollectorMapScreenState extends State<CollectorMapScreen> {
   final _mapController = MapController();
   final _distance = const ll.Distance();
 
-  static const _nearbyRadiusKm = 10.0;
+  static const _nearbyRadiusKm = GeoConfig.gpsSearchRadiusKm;
   // Douala, Cameroun — centre par défaut tant que la position réelle de
   // l'appareil n'a pas encore été obtenue (voir [_locateMe]).
   static const _defaultCenter = ll.LatLng(4.0511, 9.7679);
 
   ll.LatLng? _myPosition; // GPS live, redemandé à chaque ouverture de l'écran.
-  ll.LatLng? _zonePosition; // Zone de collecte géocodée (profil), relue depuis Firestore.
   bool _locating = false;
   bool _nearbyOnly = false;
+  bool _mapReady = false;
+  bool _fittedToPosts = false;
+  List<CollectionRequest> _lastItems = const [];
 
   @override
   void initState() {
     super.initState();
     _locateMe();
-    _loadZonePosition();
   }
 
   Future<void> _locateMe() async {
@@ -64,45 +69,32 @@ class _CollectorMapScreenState extends State<CollectorMapScreen> {
       _locating = false;
       if (location != null) {
         _myPosition = ll.LatLng(location.latitude, location.longitude);
-        _mapController.move(_myPosition!, 13);
+        if (!_fittedToPosts && _mapReady) _mapController.move(_myPosition!, 13);
       }
     });
   }
 
-  Future<void> _loadZonePosition() async {
-    final uid = AuthService().currentUser?.uid;
-    if (uid == null) return;
-    final zone = await _collectionService.getCollectorLocation(uid);
-    if (!mounted || zone == null) return;
-    setState(() {
-      _zonePosition = zone;
-      // Ne recentre que si le GPS live n'a pas déjà pris la main (sinon on
-      // préfère toujours la position live, plus précise et plus fraîche).
-      if (_myPosition == null) _mapController.move(_zonePosition!, 12);
-    });
-  }
-
-  /// Distance minimale de [point] à la plus proche des deux positions de
-  /// référence disponibles (zone de collecte, GPS live) — `null` si aucune
-  /// des deux n'est disponible.
-  double? _minDistanceKm(ll.LatLng point) {
-    double? best;
-    for (final ref in [_zonePosition, _myPosition]) {
-      if (ref == null) continue;
-      final km = _distance.as(ll.LengthUnit.Kilometer, ref, point);
-      if (best == null || km < best) best = km;
-    }
-    return best;
-  }
+  /// Distance (km) entre la position GPS actuelle et [point], `null` sans GPS.
+  double? _distanceFromMeKm(ll.LatLng point) =>
+      _myPosition == null ? null : _distance.as(ll.LengthUnit.Kilometer, _myPosition!, point);
 
   List<CollectionRequest> _visible(List<CollectionRequest> all) {
-    if (!_nearbyOnly || (_myPosition == null && _zonePosition == null)) return all;
-    final withDistance = all
-        .map((r) => (r, _minDistanceKm(ll.LatLng(r.latitude, r.longitude))))
-        .where((e) => e.$2 != null && e.$2! <= _nearbyRadiusKm)
-        .toList()
-      ..sort((a, b) => a.$2!.compareTo(b.$2!));
-    return withDistance.map((e) => e.$1).toList();
+    final me = _myPosition;
+    if (!_nearbyOnly || me == null) return all;
+    return postsAroundPosition(all, me, radiusKm: _nearbyRadiusKm).map((e) => e.$1).toList();
+  }
+
+  /// Cadre la carte sur tous les postes affichés (un seul : centré dessus).
+  void _fitToPosts(List<CollectionRequest> items) {
+    if (!_mapReady || items.isEmpty) return;
+    final points = items.map((r) => ll.LatLng(r.latitude, r.longitude)).toList();
+    if (points.length == 1) {
+      _mapController.move(points.first, 14);
+    } else {
+      _mapController.fitCamera(CameraFit.coordinates(
+          coordinates: points, padding: const EdgeInsets.all(40), maxZoom: 15));
+    }
+    _fittedToPosts = true;
   }
 
   void _openPreview(CollectionRequest r) {
@@ -135,6 +127,10 @@ class _CollectorMapScreenState extends State<CollectorMapScreen> {
             }
             final all = snap.data ?? const [];
             final items = _visible(all);
+            _lastItems = items;
+            if (!_fittedToPosts && items.isNotEmpty) {
+              WidgetsBinding.instance.addPostFrameCallback((_) => _fitToPosts(items));
+            }
 
             return Column(
               children: [
@@ -163,26 +159,16 @@ class _CollectorMapScreenState extends State<CollectorMapScreen> {
                         FlutterMap(
                           mapController: _mapController,
                           options: MapOptions(
-                            initialCenter: _myPosition ?? _zonePosition ?? _defaultCenter,
+                            initialCenter: _myPosition ?? _defaultCenter,
                             initialZoom: 12,
+                            onMapReady: () {
+                              _mapReady = true;
+                              _fitToPosts(_lastItems);
+                            },
                           ),
                           children: [
                             osmTileLayer(),
                             MarkerLayer(markers: [
-                              if (_zonePosition != null)
-                                Marker(
-                                  point: _zonePosition!,
-                                  width: 26,
-                                  height: 26,
-                                  child: Container(
-                                    decoration: BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      color: AppColors.amber,
-                                      border: Border.all(color: Colors.white, width: 3),
-                                    ),
-                                    child: const Icon(Icons.home_outlined, color: Colors.white, size: 12),
-                                  ),
-                                ),
                               if (_myPosition != null)
                                 Marker(
                                   point: _myPosition!,
@@ -211,6 +197,22 @@ class _CollectorMapScreenState extends State<CollectorMapScreen> {
                             ]),
                           ],
                         ),
+                        if (items.isNotEmpty)
+                          Positioned(
+                            left: 10,
+                            bottom: 10,
+                            child: Material(
+                              color: AppColors.card,
+                              shape: const CircleBorder(),
+                              elevation: 3,
+                              child: IconButton(
+                                tooltip: fr ? "Voir tous les postes" : "Show all posts",
+                                onPressed: () => _fitToPosts(items),
+                                icon: const Icon(Icons.zoom_out_map_rounded,
+                                    color: AppColors.greenDeep, size: 20),
+                              ),
+                            ),
+                          ),
                         if (_locating)
                           const Positioned(
                             top: 10,
@@ -235,8 +237,8 @@ class _CollectorMapScreenState extends State<CollectorMapScreen> {
                           title: fr ? "Aucune collecte disponible" : "No pickup available",
                           message: _nearbyOnly
                               ? (fr
-                                  ? "Aucune collecte à moins de ${_nearbyRadiusKm.toInt()} km. Désactivez le filtre pour tout voir."
-                                  : "No pickup within ${_nearbyRadiusKm.toInt()} km. Turn off the filter to see all.")
+                                  ? "Aucune collecte à moins de ${_nearbyRadiusKm.toInt()} km de votre position actuelle. Désactivez le filtre pour tout voir."
+                                  : "No pickup within ${_nearbyRadiusKm.toInt()} km of your current position. Turn off the filter to see all.")
                               : (fr
                                   ? "Revenez plus tard — de nouvelles demandes apparaîtront ici."
                                   : "Check back later — new requests will show up here."),
@@ -257,9 +259,8 @@ class _CollectorMapScreenState extends State<CollectorMapScreen> {
 
   Widget _nearbyChip(bool fr) {
     return GestureDetector(
-      onTap: (_myPosition == null && _zonePosition == null)
-          ? _locateMe
-          : () => setState(() => _nearbyOnly = !_nearbyOnly),
+      // Sans position GPS, le filtre la redemande d'abord.
+      onTap: _myPosition == null ? _locateMe : () => setState(() => _nearbyOnly = !_nearbyOnly),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
@@ -270,10 +271,10 @@ class _CollectorMapScreenState extends State<CollectorMapScreen> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.near_me_outlined,
+            Icon(Icons.my_location_rounded,
                 size: 14, color: _nearbyOnly ? AppColors.greenDeep : AppColors.textGray),
             const SizedBox(width: 4),
-            Text(fr ? "Près de moi" : "Near me",
+            Text(fr ? "Autour de moi (GPS)" : "Around me (GPS)",
                 style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w700,
@@ -285,7 +286,7 @@ class _CollectorMapScreenState extends State<CollectorMapScreen> {
   }
 
   Widget _tile(CollectionRequest r, bool fr) {
-    final km = _minDistanceKm(ll.LatLng(r.latitude, r.longitude));
+    final km = _distanceFromMeKm(ll.LatLng(r.latitude, r.longitude));
     return InkWell(
       borderRadius: BorderRadius.circular(16),
       onTap: () => _openPreview(r),
@@ -307,7 +308,7 @@ class _CollectorMapScreenState extends State<CollectorMapScreen> {
                       height: 48,
                       color: AppColors.inputFill,
                       child: Icon(r.category.icon, color: AppColors.greenMid))
-                  : Image.network(r.imageUrl, width: 48, height: 48, fit: BoxFit.cover),
+                  : WastePhotoImage(url: r.imageUrl, width: 48, height: 48, fit: BoxFit.cover),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -316,7 +317,7 @@ class _CollectorMapScreenState extends State<CollectorMapScreen> {
                 children: [
                   Text(r.category.label(fr),
                       style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: AppColors.mainText)),
-                  Text(r.address.isEmpty ? '—' : r.address,
+                  Text(r.neighborhood ?? (r.address.isEmpty ? '—' : r.address),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(fontSize: 10.5, color: AppColors.textGray)),

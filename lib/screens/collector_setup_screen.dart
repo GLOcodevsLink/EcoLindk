@@ -1,23 +1,24 @@
+import 'package:country_picker/country_picker.dart';
 import 'package:flutter/material.dart';
+import '../core/phone_country.dart';
 import '../core/theme.dart';
+import '../models/collection_zone.dart';
 import '../models/user_role.dart';
 import '../services/auth_service.dart';
-import '../services/collection_service.dart';
-import '../services/geocoding_service.dart';
+import '../services/collector_zone_service.dart';
+import '../widgets/collection_zones_editor.dart';
 import '../widgets/gradient_pill_button.dart';
 import '../widgets/decorative_leaves.dart';
 import '../core/l10n/app_language.dart';
 import '../core/l10n/strings.dart';
 import 'home_screen.dart';
 
-/// Dernière étape pour un Collecteur : zone de collecte + statut
-/// (indépendant ou en entreprise). Finalise le compte (vérifié
-/// immédiatement, voir AuthService.completeCollectorRegistration) puis
-/// ouvre le dashboard. La zone de collecte est aussi géocodée (voir
-/// GeocodingService) et enregistrée comme point de référence du collecteur
-/// (voir CollectionService.setCollectorLocation) — sert au filtre "Près de
-/// moi" et aux notifications de nouveaux posts proches ; jamais bloquant
-/// pour la création du compte si le géocodage échoue.
+/// Dernière étape pour un Collecteur : zones de collecte (1 à 5, choisies
+/// dans OpenStreetMap, pays prérempli depuis l'indicatif du téléphone) +
+/// statut (indépendant ou en entreprise). Finalise le compte (voir
+/// AuthService.completeCollectorRegistration), enregistre les zones (voir
+/// CollectorZoneService — elles servent au ciblage des notifications de
+/// nouveaux posts) puis ouvre le dashboard.
 class CollectorSetupScreen extends StatefulWidget {
   final String uid;
   final String firstName;
@@ -30,33 +31,47 @@ class CollectorSetupScreen extends StatefulWidget {
 
 class _CollectorSetupScreenState extends State<CollectorSetupScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _collectionZoneCtrl = TextEditingController();
   final _companyNameCtrl = TextEditingController();
+  List<CollectionZone> _zones = const [];
+  Country? _phoneCountry;
   WorkStatus _workStatus = WorkStatus.independent;
   bool _isLoading = false;
 
   final _authService = AuthService();
-  final _collectionService = CollectionService();
-  final _geocodingService = GeocodingService();
+  final _zoneService = CollectorZoneService();
+
+  @override
+  void initState() {
+    super.initState();
+    // Pays des zones prérempli depuis l'indicatif du numéro d'inscription.
+    _authService.fetchUserDocument(widget.uid).then((doc) {
+      if (mounted) setState(() => _phoneCountry = countryFromPhone(doc.data()?['phone'] as String?));
+    }).catchError((_) {});
+  }
 
   @override
   void dispose() {
-    _collectionZoneCtrl.dispose();
     _companyNameCtrl.dispose();
     super.dispose();
   }
 
   Future<void> _finish(AppStrings s) async {
     if (!_formKey.currentState!.validate()) return;
+    if (_zones.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(appLanguage.value == AppLanguage.fr
+              ? "Ajoutez au moins une zone de collecte."
+              : "Add at least one collection zone.")));
+      return;
+    }
     setState(() => _isLoading = true);
     try {
       await _authService.completeCollectorRegistration(
         widget.uid,
-        collectionZone: _collectionZoneCtrl.text,
         workStatus: _workStatus,
         companyName: _companyNameCtrl.text,
       );
-      await _geocodeAndSaveLocation();
+      await _zoneService.save(widget.uid, _zones);
       if (!mounted) return;
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(builder: (_) => const HomeScreen()),
@@ -68,19 +83,6 @@ class _CollectorSetupScreenState extends State<CollectorSetupScreen> {
           .showSnackBar(SnackBar(content: Text(s.authError('unknown'))));
     } finally {
       if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
-  /// Best-effort : un échec de géocodage (adresse introuvable, réseau) ne
-  /// doit jamais empêcher la création du compte — le collecteur pourra
-  /// toujours réessayer plus tard en modifiant sa zone depuis son profil.
-  Future<void> _geocodeAndSaveLocation() async {
-    try {
-      final result = await _geocodingService.geocode(_collectionZoneCtrl.text);
-      await _collectionService.setCollectorLocation(
-          widget.uid, result.latitude, result.longitude);
-    } catch (_) {
-      // Silencieux — voir doc ci-dessus.
     }
   }
 
@@ -118,8 +120,18 @@ class _CollectorSetupScreenState extends State<CollectorSetupScreen> {
                                       fontSize: 12.5,
                                       color: AppColors.textGray)),
                               const SizedBox(height: 22),
-                              _field(_collectionZoneCtrl, s.collectionZone,
-                                  Icons.location_on_outlined, s),
+                              CollectionZonesEditor(
+                                zones: _zones,
+                                phoneCountry: _phoneCountry,
+                                fr: lang == AppLanguage.fr,
+                                busy: _isLoading,
+                                // Liste en mémoire : enregistrée à "Terminer".
+                                onChanged: (zones) async {
+                                  CollectorZoneService.validate(zones);
+                                  setState(() => _zones = zones);
+                                  return true;
+                                },
+                              ),
                               const SizedBox(height: 18),
                               Text(s.workStatusQuestion,
                                   style: TextStyle(
@@ -185,16 +197,6 @@ class _CollectorSetupScreenState extends State<CollectorSetupScreen> {
           },
         );
       },
-    );
-  }
-
-  Widget _field(
-      TextEditingController c, String label, IconData icon, AppStrings s) {
-    return TextFormField(
-      controller: c,
-      decoration:
-          InputDecoration(labelText: label, prefixIcon: Icon(icon, size: 19)),
-      validator: (v) => (v == null || v.isEmpty) ? s.requiredField : null,
     );
   }
 

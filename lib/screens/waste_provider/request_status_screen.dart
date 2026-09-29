@@ -1,24 +1,28 @@
 import 'package:flutter/material.dart';
+import '../../widgets/waste_photo_image.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../../core/l10n/app_language.dart';
 import '../../core/theme.dart';
 import '../../models/collection_request.dart';
 import '../../services/auth_service.dart';
 import '../../services/collection_service.dart';
+import '../../services/live_tracking_service.dart';
 import '../../services/rating_service.dart';
 import '../../widgets/decorative_leaves.dart';
 import '../../widgets/gradient_pill_button.dart';
+import '../../widgets/live_tracking_map.dart';
 import '../../widgets/wp_common.dart';
+import '../collector/collector_collection_screen.dart';
 import 'chat_screen.dart';
 import 'rating_screen.dart';
+import 'scan_screen.dart';
 
 /// Suivi d'une demande de collecte : chronologie de statut, informations du
 /// partenaire (collecteur pour le Fournisseur, Fournisseur pour le
 /// Collecteur), QR code de vérification, puis poids/valeur une fois
-/// terminée. Écoute Firestore en temps réel
-/// (StreamBuilder) — pas de suivi GPS en direct du collecteur pour l'instant
-/// (non implémenté : voir la doc du module, on ne prétend jamais qu'un tel
-/// suivi existe).
+/// terminée. Écoute Firestore en temps réel (StreamBuilder) ; une fois la
+/// collecte démarrée par le Collecteur, le Fournisseur y partage sa position
+/// et suit celle du collecteur (voir LiveTrackingMap).
 ///
 /// Écran PARTAGÉ par les deux rôles (demande explicite : le Collecteur doit
 /// pouvoir faire avancer SA collecte depuis ce même écran) — le rôle du
@@ -128,7 +132,7 @@ class RequestStatusScreen extends StatelessWidget {
                       height: 64,
                       color: AppColors.inputFill,
                       child: Icon(r.category.icon, color: AppColors.greenMid))
-                  : Image.network(r.imageUrl, width: 64, height: 64, fit: BoxFit.cover),
+                  : WastePhotoImage(url: r.imageUrl, width: 64, height: 64, fit: BoxFit.cover),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -159,22 +163,28 @@ class RequestStatusScreen extends StatelessWidget {
         // explicite : plus de QR à l'arrivée, un seul QR généré APRÈS ce
         // formulaire, affiché par le Collecteur et scanné par le
         // Fournisseur pour accepter/refuser.
+        // Tout le déroulé côté Collecteur (démarrage, suivi, formulaire, QR)
+        // vit sur son écran Collecte — un seul endroit, pas deux formulaires.
         if (r.status == RequestStatus.accepted && isCollectorView)
           GradientPillButton(
-            label: fr ? "Confirmer la rencontre" : "Confirm the meeting",
-            onPressed: () => _submitWeightAndPrice(context, r, fr, service),
+            label: fr ? "Ouvrir la collecte" : "Open the collection",
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) => CollectorCollectionScreen(initialRequestId: r.id),
+            )),
           ),
         if (r.status == RequestStatus.accepted && isHouseholdView)
-          _waitingNote(
-              fr
-                  ? "En attente que le collecteur confirme la rencontre."
-                  : "Waiting for the collector to confirm the meeting.",
-              fr),
+          r.collectionStartedAt == null
+              ? _waitingNote(
+                  fr
+                      ? "En attente que le collecteur démarre la collecte."
+                      : "Waiting for the collector to start the collection.",
+                  fr)
+              : _householdTracking(r, fr),
 
         if (r.status == RequestStatus.inProgress && isCollectorView)
           _collectorPendingCard(r, fr),
         if (r.status == RequestStatus.inProgress && isHouseholdView)
-          _householdPendingCard(context, r, fr, service),
+          _householdScanPrompt(context, r, fr),
 
         if (r.status == RequestStatus.completed) ...[
           _successBanner(fr),
@@ -246,104 +256,39 @@ class RequestStatusScreen extends StatelessWidget {
     );
   }
 
-  /// Formulaire poids + prix soumis par le Collecteur après la rencontre —
-  /// le poids doit rester dans la fourchette choisie par le Fournisseur à la
-  /// création du post (demande explicite), vérifié ici ET côté serveur (voir
-  /// CollectionService.submitCollectionResult).
-  Future<void> _submitWeightAndPrice(
-      BuildContext context, CollectionRequest r, bool fr, CollectionService service) async {
-    final weightCtrl = TextEditingController();
-    final priceCtrl = TextEditingController();
-    final formKey = GlobalKey<FormState>();
-    final (min, max) = r.quantityRange.weightBoundsKg;
-    final rangeLabel = max.isInfinite
-        ? (fr ? "≥ ${min.toStringAsFixed(0)} kg" : "≥ ${min.toStringAsFixed(0)} kg")
-        : "${min.toStringAsFixed(0)} - ${max.toStringAsFixed(0)} kg";
-
-    final result = await showDialog<(double, double)>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.card,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Text(fr ? "Résultat de la collecte" : "Collection result"),
-        content: Form(
-          key: formKey,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
+  /// Vue Fournisseur une fois la collecte démarrée : invitation à partager
+  /// sa position + carte en direct des deux parties.
+  Widget _householdTracking(CollectionRequest r, bool fr) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: const Color(0xFFEAF6FB),
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: Row(
             children: [
-              Text(
-                  fr
-                      ? "Quantité annoncée par le fournisseur : $rangeLabel"
-                      : "Provider's declared quantity: $rangeLabel",
-                  style: TextStyle(fontSize: 11.5, color: AppColors.textGray)),
-              const SizedBox(height: 12),
-              TextFormField(
-                controller: weightCtrl,
-                autofocus: true,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: InputDecoration(
-                    hintText: fr ? "Ex. 3.5" : "E.g. 3.5", suffixText: "kg"),
-                validator: (v) {
-                  final parsed = double.tryParse((v ?? '').replaceAll(',', '.'));
-                  if (parsed == null || parsed <= 0) {
-                    return fr ? "Entrez un poids valide." : "Enter a valid weight.";
-                  }
-                  if (parsed < min || parsed > max) {
-                    return fr
-                        ? "Doit rester dans la fourchette : $rangeLabel"
-                        : "Must stay within: $rangeLabel";
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 12),
-              TextFormField(
-                controller: priceCtrl,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: InputDecoration(
-                    hintText: fr ? "Ex. 1500" : "E.g. 1500", suffixText: "FCFA"),
-                validator: (v) {
-                  final parsed = double.tryParse((v ?? '').replaceAll(',', '.'));
-                  if (parsed == null || parsed <= 0) {
-                    return fr ? "Entrez un prix valide." : "Enter a valid price.";
-                  }
-                  return null;
-                },
+              const Icon(Icons.local_shipping_rounded, color: Color(0xFF2094C4)),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                    fr
+                        ? "${r.collectorName ?? 'Votre collecteur'} est en route. Votre position est partagée avec lui pendant la collecte pour qu'il vous trouve facilement."
+                        : "${r.collectorName ?? 'Your collector'} is on the way. Your location is shared with them during the collection so they can find you easily.",
+                    style: TextStyle(fontSize: 12.5, color: AppColors.mainText, height: 1.4)),
               ),
             ],
           ),
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: Text(fr ? "Annuler" : "Cancel")),
-          TextButton(
-            onPressed: () {
-              if (formKey.currentState!.validate()) {
-                Navigator.of(ctx).pop((
-                  double.parse(weightCtrl.text.replaceAll(',', '.')),
-                  double.parse(priceCtrl.text.replaceAll(',', '.')),
-                ));
-              }
-            },
-            child: Text(fr ? "Confirmer" : "Confirm",
-                style: const TextStyle(color: AppColors.greenMid, fontWeight: FontWeight.w700)),
-          ),
-        ],
-      ),
+        const SizedBox(height: 14),
+        // Partage automatique dès l'ouverture, comme côté collecteur : les
+        // deux parties se voient bouger sans action supplémentaire (bouton
+        // "Arrêter de partager" toujours disponible sur la carte).
+        LiveTrackingMap(request: r, role: TrackingRole.household, fr: fr, autoShare: true),
+      ],
     );
-    if (result == null) return;
-    final (weight, price) = result;
-    try {
-      await service.submitCollectionResult(r.id, weightKg: weight, priceFcfa: price);
-    } catch (_) {
-      // Le formulaire valide déjà la fourchette côté client — ce contrôle
-      // serveur ne devrait donc (presque) jamais se déclencher, mais ne
-      // doit jamais planter silencieusement s'il le fait.
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(fr
-              ? "Poids hors fourchette ou envoi impossible. Réessayez."
-              : "Weight out of range or couldn't submit. Try again.")));
-    }
   }
 
   /// Vue Collecteur pendant [RequestStatus.inProgress] : rappel de ce qui a
@@ -378,7 +323,7 @@ class RequestStatusScreen extends StatelessWidget {
         _waitingNote(
             fr
                 ? "En attente que le fournisseur scanne ce code et confirme."
-                : "Waiting for the provider to scan this code and confirm.",
+                : "Waiting for the supplier to scan this code and confirm.",
             fr),
       ],
     );
@@ -395,93 +340,56 @@ class RequestStatusScreen extends StatelessWidget {
     );
   }
 
-  /// Vue Fournisseur pendant [RequestStatus.inProgress] : ce que le
-  /// collecteur a soumis, avec Accepter/Refuser — atteinte soit en scannant
-  /// le QR du collecteur, soit directement depuis "Mes collectes" (la
-  /// donnée est la même dans les deux cas, voir doc de la classe).
-  Widget _householdPendingCard(
-      BuildContext context, CollectionRequest r, bool fr, CollectionService service) {
-    return Column(
-      children: [
-        Container(
-          padding: const EdgeInsets.all(16),
-          decoration:
-              BoxDecoration(gradient: AppColors.buttonGradient, borderRadius: BorderRadius.circular(18)),
-          child: Row(
+  /// Vue Fournisseur pendant [RequestStatus.inProgress] : le formulaire du
+  /// collecteur n'est PAS affiché ici — on ne peut l'accepter ou le refuser
+  /// qu'en scannant le QR code affiché sur l'écran du collecteur (voir
+  /// ScanScreen/CollectionReviewScreen), donc en sa présence.
+  Widget _householdScanPrompt(BuildContext context, CollectionRequest r, bool fr) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.line, width: 1.2),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
             children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(fr ? "Poids proposé" : "Proposed weight",
-                        style: const TextStyle(color: Colors.white70, fontSize: 11)),
-                    Text("${(r.pendingWeightKg ?? 0).toStringAsFixed(1)} kg",
-                        style: const TextStyle(
-                            color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800)),
-                  ],
-                ),
+              Container(
+                width: 42,
+                height: 42,
+                decoration: const BoxDecoration(gradient: AppColors.buttonGradient, shape: BoxShape.circle),
+                child: const Icon(Icons.qr_code_scanner_rounded, color: Colors.white, size: 21),
               ),
+              const SizedBox(width: 12),
               Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(fr ? "Prix proposé" : "Proposed price",
-                        style: const TextStyle(color: Colors.white70, fontSize: 11)),
-                    Text("${(r.pendingPriceFcfa ?? 0).toStringAsFixed(0)} FCFA",
-                        style: const TextStyle(
-                            color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800)),
-                  ],
-                ),
+                child: Text(
+                    fr
+                        ? "${r.collectorName ?? 'Le collecteur'} a rempli le formulaire de collecte."
+                        : "${r.collectorName ?? 'The collector'} filled in the collection form.",
+                    style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w800, color: AppColors.mainText)),
               ),
             ],
           ),
-        ),
-        const SizedBox(height: 14),
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton(
-                onPressed: () => _rejectPending(context, r, fr, service),
-                style: OutlinedButton.styleFrom(side: const BorderSide(color: Colors.redAccent)),
-                child: Text(fr ? "Refuser" : "Reject",
-                    style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.w700)),
-              ),
+          const SizedBox(height: 10),
+          Text(
+              fr
+                  ? "Scannez le QR code affiché sur son téléphone pour voir le poids et le prix, puis accepter ou refuser."
+                  : "Scan the QR code shown on their phone to see the weight and price, then accept or reject.",
+              style: TextStyle(fontSize: 12.5, color: AppColors.textGray, height: 1.4)),
+          const SizedBox(height: 14),
+          GradientPillButton(
+            label: fr ? "Scanner le QR code" : "Scan the QR code",
+            trailingIcon: Icons.qr_code_scanner_rounded,
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const ScanScreen()),
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: GradientPillButton(
-                label: fr ? "Accepter" : "Accept",
-                onPressed: () => service.confirmCollectionResult(r.id),
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  Future<void> _rejectPending(
-      BuildContext context, CollectionRequest r, bool fr, CollectionService service) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.card,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Text(fr ? "Refuser ce poids/prix ?" : "Reject this weight/price?"),
-        content: Text(fr
-            ? "Le collecteur sera prévenu et pourra renvoyer un nouveau formulaire."
-            : "The collector will be notified and can resubmit the form."),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: Text(fr ? "Retour" : "Back")),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: Text(fr ? "Refuser" : "Reject",
-                style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.w700)),
           ),
         ],
       ),
     );
-    if (confirmed == true) await service.rejectCollectionResult(r.id);
   }
 
   Widget _timeline(CollectionRequest r, bool fr) {
@@ -588,7 +496,7 @@ class RequestStatusScreen extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(fr ? "Fournisseur" : "Provider",
+                Text(fr ? "Fournisseur" : "Supplier",
                     style: TextStyle(fontSize: 11, color: AppColors.textGray)),
                 Text(r.householdName.isEmpty ? '—' : r.householdName,
                     style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.mainText)),
@@ -637,11 +545,17 @@ class RequestStatusScreen extends StatelessWidget {
           Text(
               fr
                   ? "Montrez ce code au fournisseur pour qu'il le scanne et confirme."
-                  : "Show this code to the provider so they can scan and confirm.",
+                  : "Show this code to the supplier so they can scan and confirm.",
               textAlign: TextAlign.center,
               style: TextStyle(fontSize: 11, color: AppColors.textGray)),
           const SizedBox(height: 14),
-          QrImageView(data: 'ecolindk:collection:${r.id}', size: 160),
+          // Fond blanc forcé : un QR sur fond sombre (mode nuit) ne se
+          // scanne pas de façon fiable.
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12)),
+            child: QrImageView(data: r.qrPayload, size: 160),
+          ),
           const SizedBox(height: 10),
           Text(r.reference, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.greenDeep)),
         ],

@@ -3,7 +3,8 @@ import '../models/collection_request.dart';
 import 'gemini_service.dart';
 
 /// Codes gérés explicitement par [PostWasteScreen] : pas d'image, image
-/// invalide, échec de classification, déchet non supporté, échec réseau.
+/// invalide, échec de classification, déchet non supporté, échec réseau,
+/// IA non activée dans le projet Firebase (`not-configured`).
 class AiClassificationException implements Exception {
   final String code;
   const AiClassificationException(this.code);
@@ -25,8 +26,8 @@ class AiClassificationResult {
   });
 }
 
-/// Analyse IA réelle d'une photo de déchet via l'API Gemini (voir
-/// GeminiService) — jamais une vérité : l'utilisateur confirme ou corrige
+/// Analyse IA réelle d'une photo de déchet via Gemini (Firebase AI Logic,
+/// voir GeminiService) — jamais une vérité : l'utilisateur confirme ou corrige
 /// toujours la catégorie/quantité suggérée avant de continuer (voir
 /// PostWasteScreen). Ne renvoie jamais une catégorie inventée : le modèle
 /// doit choisir parmi les [WasteCategory] existants de l'app, sous peine de
@@ -50,31 +51,20 @@ class AiClassifier {
       throw const AiClassificationException('invalid-image');
     }
 
-    final mimeType = _mimeTypeFor(imagePath);
-    final prompt = '''
-You are the waste-identification assistant inside the EcoLindk recyclable-waste app.
-Look at the photo and identify the recyclable waste it shows.
+    return classifyBytes(bytes, _mimeTypeFor(imagePath));
+  }
 
-Respond with STRICT JSON only, matching exactly this shape:
-{"category": "<one of: plastic, paperCardboard, glass, metal, unsupported>", "confidence": <number 0 to 1>, "estimatedWeightKg": <your best-guess weight in kilograms as a number, e.g. 3.5, or null if you really cannot estimate>}
-
-Rules:
-- "plastic" = plastic bottles/containers/packaging.
-- "paperCardboard" = paper, cardboard, cartons.
-- "glass" = glass bottles/jars.
-- "metal" = metal cans, aluminium, tin.
-- Use "unsupported" ONLY if the photo shows no recognizable recyclable material from this list.
-- Never invent a category outside this list.
-- "estimatedWeightKg" must be a plain positive number (no unit, no range), or null.
-- Return ONLY the JSON object, no extra text.
-''';
-
+  /// Même analyse, à partir d'une image déjà en mémoire — typiquement la
+  /// version compressée préparée dès le choix de la photo (voir
+  /// PostWasteScreen) : quelques centaines de Ko à envoyer au lieu de
+  /// plusieurs Mo, donc une analyse bien plus rapide sur réseau mobile.
+  static Future<AiClassificationResult> classifyBytes(List<int> bytes, String mimeType) async {
+    if (bytes.isEmpty) throw const AiClassificationException('invalid-image');
     Map<String, dynamic> json;
     try {
       json = await GeminiService().classifyWasteImage(
         imageBytes: bytes,
         mimeType: mimeType,
-        prompt: prompt,
       );
     } on GeminiServiceException catch (e) {
       throw AiClassificationException(_mapServiceError(e.code));
@@ -105,7 +95,7 @@ Rules:
   static String _mapServiceError(String code) => switch (code) {
         'network' => 'network',
         'timeout' => 'network',
-        'no-api-key' => 'network',
+        'not-configured' => 'not-configured',
         _ => 'failed',
       };
 

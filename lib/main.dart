@@ -1,17 +1,40 @@
+import 'package:firebase_app_check/firebase_app_check.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'core/env_config.dart';
 import 'core/theme.dart';
 import 'firebase_options.dart';
 import 'screens/auth_gate.dart';
+import 'services/ai_model_settings.dart';
 import 'services/settings_service.dart';
+
+/// App Check : prouve à Firebase que les appels (IA, Firestore) viennent de
+/// l'app EcoLindk authentique. Désactivé par défaut, car tant qu'il n'est
+/// pas configuré dans la console Firebase, les appels à l'IA échoueraient.
+/// Une fois configuré (voir FIREBASE_SANS_SERVEUR.md), lancer l'app avec
+/// `--dart-define=ENABLE_APP_CHECK=true`.
+const _enableAppCheck = bool.fromEnvironment('ENABLE_APP_CHECK');
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // Charge `.env` (clés d'API — ex. GEMINI_API_KEY, voir core/env_config.dart)
-  // avant tout le reste : rien n'y accède avant que l'app ne tourne.
-  await EnvConfig.loadEnv();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+
+  if (_enableAppCheck) {
+    try {
+      await FirebaseAppCheck.instance.activate(
+        // En debug : jeton de débogage à enregistrer dans la console ; en
+        // release : Play Integrity (app installée depuis le Play Store).
+        providerAndroid: kDebugMode ? const AndroidDebugProvider() : const AndroidPlayIntegrityProvider(),
+        providerApple: kDebugMode ? const AppleDebugProvider() : const AppleAppAttestProvider(),
+      );
+    } catch (e) {
+      debugPrint('App Check non activé : $e');
+    }
+  }
+
+  // Modèles d'IA réglables à distance (Remote Config) — sans attendre :
+  // les valeurs par défaut suffisent au premier lancement.
+  AiModelSettings.init();
 
   // Restaure le mode sombre choisi lors d'une session précédente (onboarding
   // ou profil), puis persiste tout changement ultérieur — quel que soit

@@ -17,9 +17,20 @@ void main() {
       expect(RewardsConfig.fcfaForPoints(0), 0);
     });
 
-    test('points d\'une collecte = points/kg × poids', () async {
-      expect(RewardsConfig.pointsForCollection(WasteCategory.plastic, 2), 20);
-      expect(RewardsConfig.pointsForCollection(WasteCategory.metal, 1.5), 22.5);
+    test('points d\'une collecte = taux affiché sur "Taux de conversion" × poids', () async {
+      // Bouteilles plastique 3 P/kg, métal 6 P/kg, verre 0,5 P/kg, carton 2 P/kg.
+      expect(RewardsConfig.pointsForCollection(WasteCategory.plastic, 11), 33);
+      expect(RewardsConfig.pointsForCollection(WasteCategory.metal, 1.5), 9);
+      expect(RewardsConfig.pointsForCollection(WasteCategory.glass, 4), 2);
+      expect(RewardsConfig.pointsForCollection(WasteCategory.paperCardboard, 5), 10);
+    });
+
+    test('une seule ligne du barème affiché par catégorie créditée', () async {
+      for (final c in WasteCategory.values) {
+        final rows = RewardsConfig.referenceMaterials.where((m) => m.creditedCategory == c);
+        expect(rows.length, 1, reason: c.name);
+        expect(RewardsConfig.pointsPerKg[c], rows.single.pointsPerKg);
+      }
     });
 
     test('valeur d\'une collecte = prix/kg × poids', () async {

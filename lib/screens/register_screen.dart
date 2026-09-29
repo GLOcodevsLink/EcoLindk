@@ -12,16 +12,24 @@ import '../core/l10n/app_language.dart';
 import '../core/l10n/strings.dart';
 import '../models/user_role.dart';
 import 'collector_setup_screen.dart';
+import 'email_verification_screen.dart';
 import 'home_screen.dart';
 import 'login_screen.dart';
+import 'otp_verification_screen.dart';
 
-/// Inscription, en 3 étapes, formulaire affiché DÈS L'ARRIVÉE sur la page
-/// (demande explicite) :
+/// Inscription, formulaire affiché DÈS L'ARRIVÉE sur la page (demande
+/// explicite) — 3 étapes pour un Collecteur, 2 pour un Fournisseur de
+/// déchets, à qui l'adresse n'est plus demandée (chaque post a sa propre
+/// adresse, GPS ou tapée) :
 /// 0. Identité — prénom, nom, email, mot de passe.
-/// 1. Adresse.
-/// 2. Téléphone + acceptation des conditions -> création du compte Firebase
-///    (email/mot de passe). Aucune vérification par SMS n'est requise : le
-///    numéro est simplement enregistré sur le profil.
+/// 1. Adresse (Collecteur uniquement).
+/// 2. Téléphone + acceptation des conditions, puis :
+///    - code OTP pour confirmer le numéro (**simulé**, voir
+///      OtpVerificationScreen) ;
+///    - création du compte Firebase (email/mot de passe), qui envoie l'email
+///      de vérification ;
+///    - attente du clic sur ce lien (EmailVerificationScreen, vraie
+///      vérification) avant de finaliser le rôle.
 ///
 /// Le rôle (Fournisseur de déchets / Collecteur) est choisi via deux LIENS
 /// côte à côte au-dessus du formulaire (voir [_roleLinks]) — jamais des
@@ -44,8 +52,15 @@ class RegisterScreen extends StatefulWidget {
 }
 
 class _RegisterScreenState extends State<RegisterScreen> {
-  static const _totalSteps = 3;
+  /// Index interne des étapes : 0 identité, 1 adresse, 2 téléphone. Le
+  /// Fournisseur de déchets saute l'étape 1.
   int _step = 0;
+
+  bool get _asksAddress => _role == UserRole.collector;
+  int get _totalSteps => _asksAddress ? 3 : 2;
+
+  /// Numéro d'étape affiché (1-based), sans compter l'étape sautée.
+  int get _displayStep => (!_asksAddress && _step == 2) ? 2 : _step + 1;
 
   final _identityFormKey = GlobalKey<FormState>();
   final _addressFormKey = GlobalKey<FormState>();
@@ -66,6 +81,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   String _fullPhoneNumber = '';
   bool _isCreatingAccount = false;
+
+  /// Numéro déjà confirmé par OTP : si la création du compte échoue ensuite
+  /// (ex. email déjà utilisé), on ne redemande pas le code tant que le
+  /// numéro ne change pas.
+  String? _otpVerifiedPhone;
 
   /// Jamais `null` : par défaut [UserRole.household] (Fournisseur de
   /// déchets), ou [widget.presetRole] si fourni — voir doc de la classe.
@@ -104,7 +124,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
             : "Passwords do not match");
         return;
       }
-      setState(() => _step = 1);
+      setState(() => _step = _asksAddress ? 1 : 2);
     } else if (_step == 1) {
       if (!_addressFormKey.currentState!.validate()) return;
       setState(() => _step = 2);
@@ -115,41 +135,80 @@ class _RegisterScreenState extends State<RegisterScreen> {
     if (_step == 0) {
       Navigator.of(context).pop();
     } else {
-      setState(() => _step -= 1);
+      setState(() => _step = (_step == 2 && !_asksAddress) ? 0 : _step - 1);
     }
   }
 
   Future<void> _createAccount(AppStrings s) async {
+    final fr = s.lang == AppLanguage.fr;
     if (!_acceptTerms) {
       _showSnack(s.acceptTerms);
       return;
     }
+    // Indicatif + au moins 6 chiffres : sinon, rien à vérifier par OTP.
+    if (_phoneCtrl.text.replaceAll(RegExp(r'\D'), '').length < 6) {
+      _showSnack(fr
+          ? "Entrez un numéro de téléphone valide."
+          : "Enter a valid phone number.");
+      return;
+    }
+
+    final phone = _fullPhoneNumber;
+    if (_otpVerifiedPhone != phone) {
+      final ok = await Navigator.of(context).push<bool>(
+        MaterialPageRoute(builder: (_) => OtpVerificationScreen(phoneNumber: phone)),
+      );
+      if (ok != true || !mounted) return;
+      _otpVerifiedPhone = phone;
+    }
 
     setState(() => _isCreatingAccount = true);
+    UserCredential credential;
     try {
-      final credential = await _authService.registerAccount(
+      credential = await _authService.registerAccount(
         email: _emailCtrl.text,
         password: _passwordCtrl.text,
         firstName: _firstNameCtrl.text,
         lastName: _lastNameCtrl.text,
-        address: _addressCtrl.text,
-        phoneNumber: _fullPhoneNumber,
+        address: _asksAddress ? _addressCtrl.text : '',
+        phoneNumber: phone,
+        phoneVerified: true,
+        french: fr,
       );
 
       // Comme sur l'écran de connexion : signale au gestionnaire de mots de
       // passe du système que la saisie est terminée, pour qu'il propose de
       // sauvegarder ces identifiants (et donc de les re-proposer au login).
       TextInput.finishAutofillContext();
-      if (!mounted) return;
-      await _proceedAfterAccountCreation(credential);
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
       _showSnack(s.authError(e.code));
+      setState(() => _isCreatingAccount = false);
+      return;
     } catch (_) {
       if (!mounted) return;
       _showSnack(s.authError('unknown'));
-    } finally {
-      if (mounted) setState(() => _isCreatingAccount = false);
+      setState(() => _isCreatingAccount = false);
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _isCreatingAccount = false);
+
+    // Pas d'accès à la suite tant que l'email n'est pas vérifié. Si
+    // l'utilisateur se déconnecte depuis cet écran, il est renvoyé à la
+    // connexion et cette page disparaît (`verified` reste `null`).
+    final verified = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => EmailVerificationScreen(
+          onVerified: (ctx) => Navigator.of(ctx).pop(true),
+        ),
+      ),
+    );
+    if (verified != true || !mounted) return;
+    try {
+      await _proceedAfterAccountCreation(credential);
+    } catch (_) {
+      if (mounted) _showSnack(s.authError('unknown'));
     }
   }
 
@@ -231,9 +290,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
                           ),
                           const SizedBox(height: 6),
                           _StepIndicator(
-                              step: _step,
+                              step: _displayStep - 1,
                               total: _totalSteps,
-                              label: s.stepOf(_step + 1, _totalSteps)),
+                              label: s.stepOf(_displayStep, _totalSteps)),
                           const SizedBox(height: 14),
                           Text(s.registerTitle,
                               style: TextStyle(
@@ -360,7 +419,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
   Widget _roleLink(UserRole role, AppStrings s) {
     final active = _role == role;
     return GestureDetector(
-      onTap: () => setState(() => _role = role),
+      onTap: () => setState(() {
+        _role = role;
+        // Passage au Fournisseur pendant l'étape adresse : elle disparaît.
+        if (!_asksAddress && _step == 1) _step = 2;
+      }),
       behavior: HitTestBehavior.opaque,
       child: Column(
         mainAxisSize: MainAxisSize.min,

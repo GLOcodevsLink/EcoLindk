@@ -1,8 +1,6 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import '../../core/l10n/app_language.dart';
 import '../../core/theme.dart';
-import '../../services/auth_service.dart';
 import '../../widgets/decorative_leaves.dart';
 import '../../widgets/gradient_pill_button.dart';
 
@@ -10,11 +8,10 @@ import '../../widgets/gradient_pill_button.dart';
 /// should be a subscription page because the collector will subscribe to
 /// premium for more usage").
 ///
-/// Aucun paiement réel n'est traité ici (demande explicite précédente : le
-/// paiement reste la seule pièce manquante de l'app, à intégrer séparément)
-/// — "S'abonner" enregistre juste `premium: true` sur la fiche utilisateur,
-/// pour que le statut existe déjà dans les données le jour où un vrai
-/// prestataire de paiement sera branché. Les fonctionnalités réservées au
+/// Aucun paiement n'est encore intégré (demande explicite : "lorsque l'on
+/// clique sur le bouton abonnement ça ne doit rien faire pour le moment") —
+/// "S'abonner" est volontairement inactif et n'écrit rien, jusqu'au
+/// branchement du prestataire de paiement. Les fonctionnalités réservées au
 /// Premium ne sont pas encore définies (demande explicite : "I have not yet
 /// thought about which functionalities will be reserved for premium") — la
 /// liste ci-dessous est donc volontairement générique/provisoire, à
@@ -27,33 +24,6 @@ class SubscriptionScreen extends StatefulWidget {
 }
 
 class _SubscriptionScreenState extends State<SubscriptionScreen> {
-  final _authService = AuthService();
-  bool _subscribing = false;
-
-  Future<void> _subscribe(bool fr) async {
-    final uid = _authService.currentUser?.uid;
-    if (uid == null) return;
-    setState(() => _subscribing = true);
-    try {
-      await _authService.updateProfileFields(uid, {
-        'premium': true,
-        'premiumSince': FieldValue.serverTimestamp(),
-      });
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(fr
-              ? "Abonnement Premium activé (aperçu — paiement à venir)."
-              : "Premium subscription activated (preview — payment coming soon).")));
-      Navigator.of(context).pop();
-    } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(fr ? "Échec de l'abonnement. Réessayez." : "Subscription failed. Try again.")));
-    } finally {
-      if (mounted) setState(() => _subscribing = false);
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return ValueListenableBuilder<ThemeMode>(
@@ -138,14 +108,11 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
                                 _perk(fr ? "Statistiques avancées de collecte" : "Advanced pickup statistics",
                                     Icons.bar_chart_outlined),
                                 const SizedBox(height: 24),
-                                _subscribing
-                                    ? const Center(
-                                        child: CircularProgressIndicator(
-                                            color: AppColors.greenMid, strokeWidth: 2.4))
-                                    : GradientPillButton(
-                                        label: fr ? "S'abonner" : "Subscribe",
-                                        onPressed: () => _subscribe(fr),
-                                      ),
+                                // Inactif tant que le paiement n'est pas intégré.
+                                GradientPillButton(
+                                  label: fr ? "S'abonner" : "Subscribe",
+                                  onPressed: () {},
+                                ),
                               ],
                             ),
                           ),

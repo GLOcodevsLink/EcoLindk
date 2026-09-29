@@ -1,18 +1,47 @@
+import 'dart:convert';
+
 import 'package:ecolindk/models/collection_request.dart';
+import 'package:ecolindk/models/collection_zone.dart';
 import 'package:ecolindk/services/collection_service.dart';
-import 'package:ecolindk/services/stockimg_client.dart';
+import 'package:ecolindk/services/collector_zone_service.dart';
+import 'package:ecolindk/services/geocoding_service.dart';
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+
+// Quartiers de Yaoundé (coordonnées approximatives).
+const bastos = (3.8950, 11.5100);
+const mvan = (3.8200, 11.5250);
+const essos = (3.8700, 11.5350);
+const nkolbisson = (3.8700, 11.4400);
 
 void main() {
   late FakeFirebaseFirestore db;
   late CollectionService service;
 
+  /// Quartier renvoyé par le faux géocodage inverse (Nominatim), selon la
+  /// latitude du post.
+  String neighborhoodAt(double lat) => switch (lat) {
+        3.8950 => 'Bastos',
+        3.8200 => 'Mvan',
+        3.8700 => 'Nkolbisson',
+        _ => 'Akwa',
+      };
+
   setUp(() {
     db = FakeFirebaseFirestore();
     service = CollectionService(
       firestore: db,
-      stockImg: StockImgClient(baseUrl: 'https://img.test', apiKey: 'k'),
+      geocoding: GeocodingService(client: MockClient((req) async {
+        final lat = double.parse(req.url.queryParameters['lat']!);
+        final city = lat < 3.95 ? 'Yaoundé' : 'Douala';
+        return http.Response.bytes(
+            utf8.encode(jsonEncode({
+              'address': {'suburb': neighborhoodAt(lat), 'city': city}
+            })),
+            200);
+      })),
     );
   });
 
@@ -22,7 +51,7 @@ void main() {
           .map((d) => d.data())
           .toList();
 
-  Future<CollectionRequest> post({String quantity = '5 kg'}) => service.createRequest(
+  Future<CollectionRequest> post({String quantity = '5 kg', (double, double)? at}) => service.createRequest(
         householdUid: 'house',
         householdName: 'Awa',
         imageUrl: 'https://img.test/a.jpg',
@@ -31,10 +60,67 @@ void main() {
         quantityRange: quantity,
         aiRequested: false,
         address: 'Akwa, Douala',
-        latitude: 4.0511,
-        longitude: 9.7679,
+        latitude: at?.$1 ?? 4.0511,
+        longitude: at?.$2 ?? 9.7679,
         locationIsApproximate: false,
       );
+
+  CollectionZone zone(String name, (double, double) p) => CollectionZone(
+      country: 'Cameroon', countryCode: 'CM', city: 'Yaoundé', neighborhood: name, latitude: p.$1, longitude: p.$2);
+
+  Future<List<Map<String, dynamic>>> newPostNotifs(String uid) async =>
+      (await notificationsOf(uid)).where((n) => n['type'] == 'newNearbyPost').toList();
+
+  group('notifications de nouveaux posts selon les zones de collecte', () {
+    late CollectorZoneService zones;
+
+    setUp(() async {
+      zones = CollectorZoneService(firestore: db);
+      await db.collection('users').doc('collA').set({'role': 'collector'});
+      await zones.save('collA', [zone('Mvan', mvan), zone('Bastos', bastos), zone('Essos', essos)]);
+    });
+
+    test('post à Bastos : le collecteur est notifié UNE fois (plusieurs zones proches)', () async {
+      final r = await post(at: bastos, quantity: '6 kg');
+
+      expect(r.neighborhood, 'Bastos');
+      expect(r.city, 'Yaoundé');
+      final notifs = await newPostNotifs('collA');
+      expect(notifs, hasLength(1));
+      expect(notifs.single['title'], 'Nouveau post disponible');
+      expect(notifs.single['body'], contains('Plastique'));
+      expect(notifs.single['body'], contains('6 kg'));
+      expect(notifs.single['body'], contains('Bastos'));
+      expect(notifs.single['relatedRequestId'], r.id);
+      // Identifiant fixe : une seule notification possible pour ce post.
+      final doc = await db.collection('notifications').doc('collA').collection('items').doc('newpost_${r.id}').get();
+      expect(doc.exists, isTrue);
+    });
+
+    test('post hors de ses zones (Nkolbisson) : pas notifié', () async {
+      await post(at: nkolbisson);
+      expect(await newPostNotifs('collA'), isEmpty);
+    });
+
+    test('zones modifiées : le post suivant utilise la nouvelle configuration', () async {
+      await zones.save('collA', [zone('Mvan', mvan), zone('Nkolbisson', nkolbisson)]);
+
+      await post(at: nkolbisson);
+      expect(await newPostNotifs('collA'), hasLength(1));
+
+      // Bastos n'est plus dans ses zones, et à plus de 5 km de Mvan/Nkolbisson.
+      await post(at: bastos);
+      expect(await newPostNotifs('collA'), hasLength(1));
+    });
+
+    test('le GPS actuel du collecteur n\'entre pas dans le ciblage', () async {
+      // Position en direct pendant une collecte, près de Nkolbisson : ne doit
+      // pas le rendre éligible aux posts de Nkolbisson.
+      await db.collection('liveTracking').doc('x').set({'collectorLat': nkolbisson.$1, 'collectorLng': nkolbisson.$2});
+      await post(at: nkolbisson);
+      expect(await newPostNotifs('collA'), isEmpty);
+    });
+  });
 
   Future<CollectionRequest> reload(String id) async =>
       CollectionRequest.fromDoc(await db.collection('collectionRequests').doc(id).get());
@@ -96,46 +182,76 @@ void main() {
     late String id;
 
     setUp(() async {
-      id = (await post(quantity: '5 kg')).id; // bornes : 3 à 7 kg
+      id = (await post(quantity: '15 kg')).id; // écart toléré : 5 kg au plus
       await service.acceptRequest(id, collectorUid: 'c1', collectorName: 'Paul');
     });
 
     test('poids hors de la fourchette déclarée → refusé', () async {
       await expectLater(
-          service.submitCollectionResult(id, weightKg: 10, priceFcfa: 500), throwsFormatException);
+          service.submitCollectionResult(id, weightKg: 20.5, priceFcfa: 500), throwsFormatException);
       await expectLater(
-          service.submitCollectionResult(id, weightKg: 1, priceFcfa: 500), throwsFormatException);
+          service.submitCollectionResult(id, weightKg: 9, priceFcfa: 500), throwsFormatException);
       expect((await reload(id)).status, RequestStatus.accepted);
     });
 
     test('soumission → inProgress, puis confirmation → completed avec points', () async {
-      await service.submitCollectionResult(id, weightKg: 4, priceFcfa: 300);
+      await service.submitCollectionResult(id, weightKg: 14, priceFcfa: 300);
       var r = await reload(id);
       expect(r.status, RequestStatus.inProgress);
-      expect(r.pendingWeightKg, 4);
+      expect(r.pendingWeightKg, 14);
       expect(r.pendingPriceFcfa, 300);
+      expect(r.scanCode, hasLength(10));
+      expect(r.qrPayload, 'ecolindk:collection:$id:${r.scanCode}');
 
-      await service.confirmCollectionResult(id);
+      await service.confirmCollectionResult(id, scanCode: r.scanCode!);
       r = await reload(id);
       expect(r.status, RequestStatus.completed);
-      expect(r.weightKg, 4);
+      expect(r.weightKg, 14);
       expect(r.valueFcfa, 300);
-      expect(r.pointsEarned, 40); // plastique : 10 pts/kg × 4 kg
+      expect(r.pointsEarned, 42); // plastique : 3 pts/kg (taux affiché) × 14 kg
+      expect(r.commissionFcfa, 140); // plastique : 10 FCFA/kg × 14 kg
       expect(r.pendingWeightKg, isNull);
+      expect(r.scanCode, isNull);
+      // Points crédités automatiquement à la double confirmation.
+      final wallet = await db.collection('wallets').doc('house').get();
+      expect(wallet.data()!['pointsBalance'], 42);
       expect((await notificationsOf('c1')).map((n) => n['type']), contains('requestCompleted'));
     });
 
     test('refus → retour à accepted et le collecteur est prévenu', () async {
-      await service.submitCollectionResult(id, weightKg: 4, priceFcfa: 300);
-      await service.rejectCollectionResult(id);
+      await service.submitCollectionResult(id, weightKg: 14, priceFcfa: 300);
+      final code = (await reload(id)).scanCode!;
+      await service.rejectCollectionResult(id, scanCode: code);
       final r = await reload(id);
       expect(r.status, RequestStatus.accepted);
       expect(r.pendingWeightKg, isNull);
+      expect(r.resultRejected, isTrue);
       expect((await notificationsOf('c1')).map((n) => n['type']), contains('collectionRejected'));
+
+      // Nouvelle soumission : l'erreur de refus disparaît, et l'ancien QR
+      // ne permet pas de confirmer le nouveau formulaire.
+      await service.submitCollectionResult(id, weightKg: 14, priceFcfa: 300);
+      final again = await reload(id);
+      expect(again.resultRejected, isFalse);
+      expect(again.scanCode, isNot(code));
+      await expectLater(service.confirmCollectionResult(id, scanCode: code), throwsStateError);
     });
 
-    test('confirmer sans soumission préalable ne fait rien', () async {
-      await service.confirmCollectionResult(id);
+    test('sans scanner le bon QR, impossible de confirmer ou refuser', () async {
+      await service.submitCollectionResult(id, weightKg: 14, priceFcfa: 300);
+      await expectLater(service.confirmCollectionResult(id, scanCode: 'FAUX'), throwsStateError);
+      await expectLater(service.rejectCollectionResult(id, scanCode: ''), throwsStateError);
+      expect((await reload(id)).status, RequestStatus.inProgress);
+    });
+
+    test('démarrer la collecte horodate et notifie le fournisseur', () async {
+      await service.startCollection(id);
+      expect((await reload(id)).collectionStartedAt, isNotNull);
+      expect((await notificationsOf('house')).map((n) => n['title']), contains('Collecte démarrée 🚚'));
+    });
+
+    test('confirmer sans soumission préalable est refusé', () async {
+      await expectLater(service.confirmCollectionResult(id, scanCode: 'X'), throwsStateError);
       expect((await reload(id)).status, RequestStatus.accepted);
     });
   });
@@ -144,13 +260,13 @@ void main() {
     final id = (await post()).id;
     await service.acceptRequest(id, collectorUid: 'c1', collectorName: 'Paul');
     await service.submitCollectionResult(id, weightKg: 5, priceFcfa: 375);
-    await service.confirmCollectionResult(id);
+    await service.confirmCollectionResult(id, scanCode: (await reload(id)).scanCode!);
     final done = await reload(id);
 
     await settleCompletedRequest(done, firestore: db);
     await settleCompletedRequest(done, firestore: db);
 
     final wallet = await db.collection('wallets').doc('house').get();
-    expect(wallet.data()!['pointsBalance'], 50);
+    expect(wallet.data()!['pointsBalance'], 15); // 3 pts/kg × 5 kg
   });
 }

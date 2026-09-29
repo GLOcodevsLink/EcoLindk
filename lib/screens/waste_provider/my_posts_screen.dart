@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../widgets/waste_photo_image.dart';
 import '../../core/l10n/app_language.dart';
 import '../../core/theme.dart';
 import '../../models/collection_request.dart';
@@ -132,7 +133,7 @@ class MyPostsScreen extends StatelessWidget {
                 children: [
                   r.imageUrl.isEmpty
                       ? Container(color: color.withOpacity(0.14), child: Icon(r.category.icon, color: color, size: 30))
-                      : Image.network(r.imageUrl, fit: BoxFit.cover),
+                      : WastePhotoImage(url: r.imageUrl, fit: BoxFit.cover),
                   Positioned(
                     top: 6,
                     right: 6,

@@ -3,6 +3,27 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // La vérification de l'email (et du téléphone) se fait uniquement à
+    // l'inscription (voir RegisterScreen), jamais à la connexion : les règles
+    // n'exigent donc qu'un utilisateur connecté, pour que les comptes créés
+    // avant cette vérification continuent de fonctionner normalement.
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // Une mise à jour ne modifie que les champs listés.
+    function changedOnly(fields) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(fields);
+    }
+
+    // L'id d'une conversation est formé des deux uid triés, joints par "_"
+    // (voir MessagingService) — les uid Firebase ne contiennent jamais de
+    // "_". On sait donc qui y participe sans lire aucun document, ce qui
+    // permet aussi de lister les messages d'une conversation encore vide.
+    function conversationMembers(conversationId) {
+      return conversationId.split('_');
+    }
+
     // Un utilisateur peut lire/créer uniquement sa propre fiche.
     //
     // À la création du compte, `role` et `verificationStatus` sont null
@@ -50,10 +71,14 @@ service cloud.firestore {
     // le numéro exact pour lire l'entrée correspondante, aucune énumération
     // possible. Écrit une seule fois à l'inscription (voir
     // AuthService.registerAccount).
+    // Création : seulement vers SON PROPRE email — sinon n'importe qui
+    // pourrait associer le numéro d'un autre à une adresse de son choix et
+    // bloquer sa connexion par téléphone.
     match /phone_lookup/{phoneNumber} {
       allow get: if true;
       allow list: if false;
-      allow create: if request.auth != null;
+      allow create: if request.auth != null
+                    && request.resource.data.email == request.auth.token.email;
       // Suppression : uniquement l'entrée qui pointe vers son propre email
       // (nettoyage lors de AuthService.deleteAccount).
       allow delete: if request.auth != null
@@ -81,7 +106,7 @@ service cloud.firestore {
     // ------------------------------------------------------------------
 
     match /collectionRequests/{requestId} {
-      allow create: if request.auth != null
+      allow create: if signedIn()
                     && request.resource.data.householdUid == request.auth.uid
                     && request.resource.data.status == 'pending'
                     && request.resource.data.collectorUid == null;
@@ -94,11 +119,16 @@ service cloud.firestore {
                       || resource.data.collectorUid == request.auth.uid
                       || resource.data.status == 'pending');
 
+      // Chaque transition autorisée ne peut toucher QUE ses propres champs
+      // (`affectedKeys().hasOnly`) : ni le collecteur ne peut clôturer une
+      // collecte ou changer sa commission, ni le fournisseur modifier le
+      // poids/prix soumis par le collecteur.
       allow update: if request.auth != null && (
           // Le Fournisseur annule sa propre demande tant qu'elle est libre.
           (resource.data.householdUid == request.auth.uid
             && resource.data.status == 'pending'
-            && request.resource.data.status == 'cancelled')
+            && request.resource.data.status == 'cancelled'
+            && changedOnly(['status']))
           ||
           // Un collecteur accepte une demande encore libre — une seule
           // acceptation possible (le document n'a alors plus `collectorUid
@@ -106,42 +136,91 @@ service cloud.firestore {
           (resource.data.collectorUid == null
             && resource.data.status == 'pending'
             && request.resource.data.collectorUid == request.auth.uid
-            && request.resource.data.status == 'accepted')
+            && request.resource.data.status == 'accepted'
+            && changedOnly(['collectorUid', 'collectorName', 'status', 'acceptedAt']))
           ||
-          // Le collecteur déjà assigné soumet poids/prix après la rencontre
-          // (voir CollectionService.submitCollectionResult) — seuls les
-          // champs de résultat changent, jamais l'identité des deux parties
-          // de la demande.
+          // Le collecteur assigné démarre la collecte (suivi en direct).
           (resource.data.collectorUid == request.auth.uid
-            && request.resource.data.householdUid == resource.data.householdUid
-            && request.resource.data.collectorUid == resource.data.collectorUid)
+            && resource.data.status == 'accepted'
+            && request.resource.data.status == 'accepted'
+            && changedOnly(['collectionStartedAt']))
           ||
-          // Le Fournisseur confirme ou refuse le poids/prix soumis, après
-          // avoir scanné le QR du collecteur (voir
-          // CollectionService.confirmCollectionResult/rejectCollectionResult) —
-          // seul lui peut faire passer une demande `inProgress` (en attente
-          // de sa confirmation) vers `completed` (accepté) ou `accepted`
-          // (refusé, le collecteur resoumettra).
+          // Le collecteur assigné soumet poids/prix après la rencontre (voir
+          // CollectionService.submitCollectionResult), avec un nouveau code
+          // pour le QR que le fournisseur devra scanner.
+          (resource.data.collectorUid == request.auth.uid
+            && resource.data.status == 'accepted'
+            && request.resource.data.status == 'inProgress'
+            && request.resource.data.pendingWeightKg is number
+            && request.resource.data.pendingPriceFcfa is number
+            && request.resource.data.scanCode is string
+            && changedOnly(['status', 'pendingWeightKg', 'pendingPriceFcfa', 'resultRejected', 'scanCode']))
+          ||
+          // Le Fournisseur accepte le formulaire après avoir scanné le QR du
+          // collecteur : les valeurs définitives sont exactement celles
+          // soumises par le collecteur.
           (resource.data.householdUid == request.auth.uid
             && resource.data.status == 'inProgress'
-            && (request.resource.data.status == 'completed'
-                || request.resource.data.status == 'accepted')
-            && request.resource.data.householdUid == resource.data.householdUid
-            && request.resource.data.collectorUid == resource.data.collectorUid)
+            && request.resource.data.status == 'completed'
+            && request.resource.data.weightKg == resource.data.pendingWeightKg
+            && request.resource.data.valueFcfa == resource.data.pendingPriceFcfa
+            && changedOnly(['status', 'weightKg', 'valueFcfa', 'pointsEarned', 'commissionFcfa',
+                            'pendingWeightKg', 'pendingPriceFcfa', 'scanCode', 'completedAt']))
+          ||
+          // ... ou le refuse : retour à `accepted`, le collecteur resoumettra.
+          (resource.data.householdUid == request.auth.uid
+            && resource.data.status == 'inProgress'
+            && request.resource.data.status == 'accepted'
+            && request.resource.data.resultRejected == true
+            && changedOnly(['status', 'pendingWeightKg', 'pendingPriceFcfa', 'scanCode', 'resultRejected']))
       );
 
       allow delete: if false;
     }
 
-    // Point de référence géocodé d'un Collecteur (voir
-    // CollectionService.setCollectorLocation) — séparé de `users/{uid}` car
-    // TOUT utilisateur authentifié doit pouvoir le lire pour calculer une
-    // distance (filtre "Près de moi", notification de nouveau post proche),
-    // ce qui serait beaucoup trop large comme permission sur la fiche
-    // utilisateur complète. Seul le collecteur lui-même écrit sa position.
+    // Photos des déchets postés (voir WastePhotoService), stockées dans
+    // Firestore faute de Firebase Storage sur le plan gratuit. Lisibles par
+    // tout utilisateur connecté (un collecteur doit voir la photo d'un post
+    // libre avant de l'accepter, comme pour les demandes `pending`). Chacun
+    // n'enregistre que SES photos : JPEG compressé, moins de 950 Ko.
+    // Jamais modifiées ni supprimées depuis l'app.
+    match /wastePhotos/{photoId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+                    && request.resource.data.ownerUid == request.auth.uid
+                    && request.resource.data.contentType == 'image/jpeg'
+                    && request.resource.data.data is bytes
+                    && request.resource.data.data.size() <= 950000;
+      allow update, delete: if false;
+    }
+
+    // Zones de collecte d'un Collecteur (voir CollectorZoneService), en copie
+    // minimale — séparée de `users/{uid}` car TOUT utilisateur connecté doit
+    // pouvoir la lire : c'est l'appareil du Fournisseur qui publie un post
+    // qui calcule quels collecteurs notifier. Seul le collecteur lui-même
+    // l'écrit, 5 zones au plus.
     match /collectorLocations/{uid} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null && request.auth.uid == uid;
+      allow read: if signedIn();
+      allow write: if signedIn() && request.auth.uid == uid
+                   && (!('zones' in request.resource.data)
+                       || (request.resource.data.zones is list
+                           && request.resource.data.zones.size() <= 5));
+    }
+
+    // Positions en direct d'une collecte démarrée (voir LiveTrackingService)
+    // — id = id de la demande ; seuls son Fournisseur et son Collecteur
+    // assigné peuvent lire/écrire, et seulement tant qu'elle n'est pas
+    // terminée (suppression permise pour le nettoyage à la confirmation).
+    match /liveTracking/{requestId} {
+      function isParty() {
+        let req = get(/databases/$(database)/documents/collectionRequests/$(requestId)).data;
+        return request.auth != null
+          && (req.householdUid == request.auth.uid || req.collectorUid == request.auth.uid);
+      }
+      allow read, delete: if isParty();
+      allow create, update: if isParty()
+        && get(/databases/$(database)/documents/collectionRequests/$(requestId)).data.status
+             in ['accepted', 'inProgress'];
     }
 
     // Portefeuille à points — voir WalletService. Strictement personnel :
@@ -206,14 +285,21 @@ service cloud.firestore {
     // — seules exceptions "écriture chez un autre utilisateur" du fichier,
     // toutes deux sans impact sur l'argent/les points, juste un risque de
     // spam visuel.
+    function isPartyPair(requestId, a, b) {
+      let req = get(/databases/$(database)/documents/collectionRequests/$(requestId)).data;
+      return (req.householdUid == a && req.collectorUid == b)
+          || (req.collectorUid == a && req.householdUid == b);
+    }
+
     match /notifications/{uid} {
       match /items/{itemId} {
         allow read, update: if request.auth != null && request.auth.uid == uid;
         allow create: if request.auth != null && (
             request.auth.uid == uid
+            // Les deux parties d'une même demande se notifient l'une l'autre
+            // (acceptation, démarrage, formulaire soumis, confirmation, refus).
             || (request.resource.data.relatedRequestId is string
-                && get(/databases/$(database)/documents/collectionRequests/$(request.resource.data.relatedRequestId)).data.collectorUid == request.auth.uid
-                && get(/databases/$(database)/documents/collectionRequests/$(request.resource.data.relatedRequestId)).data.householdUid == uid)
+                && isPartyPair(request.resource.data.relatedRequestId, request.auth.uid, uid))
             || (request.resource.data.type == 'newNearbyPost'
                 && request.resource.data.relatedRequestId is string
                 && get(/databases/$(database)/documents/collectionRequests/$(request.resource.data.relatedRequestId)).data.householdUid == request.auth.uid)
@@ -226,7 +312,7 @@ service cloud.firestore {
     // terminée — une seule par collecte (id = requestId).
     match /ratings/{requestId} {
       allow read: if request.auth != null;
-      allow create: if request.auth != null
+      allow create: if signedIn()
                     && request.resource.data.householdUid == request.auth.uid;
       allow update, delete: if false;
     }
@@ -236,15 +322,18 @@ service cloud.firestore {
     // triés), lisible/modifiable seulement par ses deux participants ; la
     // paire elle-même (`participants`) ne peut plus changer une fois créée.
     match /conversations/{conversationId} {
+      // Premier cas : lecture d'UNE conversation (même pas encore créée) ;
+      // second : la liste "mes conversations" (filtre array-contains).
       allow read: if request.auth != null
-                  && request.auth.uid in resource.data.participants;
+                  && (request.auth.uid in conversationMembers(conversationId)
+                      || request.auth.uid in resource.data.participants);
 
-      allow create: if request.auth != null
-                    && request.resource.data.participants.size() == 2
-                    && request.auth.uid in request.resource.data.participants;
+      allow create: if signedIn()
+                    && request.auth.uid in conversationMembers(conversationId)
+                    && request.resource.data.participants == conversationMembers(conversationId);
 
       allow update: if request.auth != null
-                    && request.auth.uid in resource.data.participants
+                    && request.auth.uid in conversationMembers(conversationId)
                     && request.resource.data.participants == resource.data.participants;
 
       allow delete: if false;
@@ -258,14 +347,17 @@ service cloud.firestore {
       // batch n'est pas garanti. Dupliquer le champ rend chaque message
       // auto-suffisant, sans dépendre de cet ordre.
       match /messages/{messageId} {
+        // Sans dépendre du contenu des messages : Firestore refuse une
+        // requête dont il ne peut pas prouver d'avance qu'elle respecte la
+        // règle — c'est ce qui bloquait tout le chat.
         allow read: if request.auth != null
-                    && request.auth.uid in resource.data.participants;
+                    && request.auth.uid in conversationMembers(conversationId);
 
-        // Chacun n'envoie jamais un message qu'au nom de quelqu'un d'autre.
-        allow create: if request.auth != null
+        // Chacun n'envoie de message qu'en son propre nom.
+        allow create: if signedIn()
                       && request.resource.data.senderUid == request.auth.uid
-                      && request.resource.data.participants.size() == 2
-                      && request.auth.uid in request.resource.data.participants;
+                      && request.auth.uid in conversationMembers(conversationId)
+                      && request.resource.data.participants == conversationMembers(conversationId);
 
         allow update, delete: if false;
       }

@@ -12,19 +12,22 @@ import '../../services/notification_service.dart';
 import '../../widgets/decorative_leaves.dart';
 import '../../widgets/modern_bottom_nav.dart';
 import '../settings/settings_screen.dart';
+import '../waste_provider/ai_assistant_screen.dart';
 import '../waste_provider/messages_screen.dart';
 import '../waste_provider/notifications_center_screen.dart';
-import '../waste_provider/scan_screen.dart';
+import 'collector_collection_screen.dart';
 import 'collector_commission_screen.dart';
 import 'collector_history_screen.dart';
+import 'collector_request_preview_screen.dart';
 import 'collector_tasks_screen.dart';
 
 /// Point d'entrée du dashboard Collecteur — pendant de [WasteProviderShell]
 /// pour ce rôle (voir sa doc). Même barre de navigation basse "flottante" à
-/// 5 emplacements : Accueil / Collectes / [bouton Scan central] / Messages /
-/// Réglages — seuls Accueil, Collectes, Messages et Réglages sont des
-/// onglets (IndexedStack, gardent leur état) ; le bouton Scan central pousse
-/// [ScanScreen] par-dessus au lieu de changer d'onglet.
+/// 5 emplacements : Accueil / Collectes / [bouton Collecte central] /
+/// Messages / Réglages — seuls Accueil, Collectes, Messages et Réglages sont
+/// des onglets (IndexedStack, gardent leur état) ; le bouton Collecte
+/// central pousse [CollectorCollectionScreen] par-dessus (le scan du QR est
+/// fait par le Fournisseur, pas par le Collecteur).
 ///
 /// Avant ce shell, "Collectes"/"Messages"/"Réglages" étaient ouverts par des
 /// `Navigator.push` distincts depuis un dashboard sans onglets réel (barre
@@ -44,9 +47,9 @@ class _CollectorShellState extends State<CollectorShell> {
 
   void _goToTab(int i) => setState(() => _index = i);
 
-  void _openScan() {
-    Navigator.of(context)
-        .push(MaterialPageRoute(builder: (_) => const ScanScreen()));
+  void _openCollection() {
+    Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const CollectorCollectionScreen()));
   }
 
   @override
@@ -68,7 +71,7 @@ class _CollectorShellState extends State<CollectorShell> {
           bottomNavigationBar: ModernBottomNav(
             currentIndex: _index,
             onTap: _goToTab,
-            centerAction: _scanButton(fr),
+            centerAction: _collectionButton(fr),
             items: [
               ModernNavItem(
                   icon: RemixIcons.home_line,
@@ -99,12 +102,12 @@ class _CollectorShellState extends State<CollectorShell> {
     );
   }
 
-  /// Bouton central "Scanner" : le Collecteur y scanne le QR code affiché
-  /// par le Fournisseur au moment de la collecte pour ouvrir directement le
-  /// suivi de cette demande (voir ScanScreen).
-  Widget _scanButton(bool fr) {
+  /// Bouton central "Collecte" : ouvre le déroulé d'une collecte acceptée
+  /// (démarrage, suivi en temps réel, confirmation, QR — voir
+  /// CollectorCollectionScreen).
+  Widget _collectionButton(bool fr) {
     return GestureDetector(
-      onTap: _openScan,
+      onTap: _openCollection,
       child: Transform.translate(
         offset: const Offset(0, -20),
         child: Column(
@@ -127,12 +130,12 @@ class _CollectorShellState extends State<CollectorShell> {
                         offset: const Offset(0, 5)),
                   ],
                 ),
-                child: const Icon(RemixIcons.qr_code_fill,
+                child: const Icon(RemixIcons.truck_fill,
                     color: Colors.white, size: 24),
               ),
             ),
             const SizedBox(height: 2),
-            Text(fr ? "Scanner" : "Scan",
+            Text(fr ? "Collecte" : "Collection",
                 style: TextStyle(
                     fontSize: 10.5,
                     color: AppColors.greenDark,
@@ -153,13 +156,22 @@ class _CollectorDashboardTab extends StatefulWidget {
   const _CollectorDashboardTab({required this.onOpenTab});
 
   @override
-  State<_CollectorDashboardTab> createState() =>
-      _CollectorDashboardTabState();
+  State<_CollectorDashboardTab> createState() => _CollectorDashboardTabState();
 }
 
 class _CollectorDashboardTabState extends State<_CollectorDashboardTab> {
   final _authService = AuthService();
   late final Future<DocumentSnapshot<Map<String, dynamic>>?> _userDocFuture;
+  late final Stream<List<CollectionRequest>> _availableStream =
+      CollectionService().watchAvailableRequests();
+  final _searchCtrl = TextEditingController();
+  String _query = '';
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
 
   @override
   void initState() {
@@ -180,6 +192,13 @@ class _CollectorDashboardTabState extends State<_CollectorDashboardTab> {
   void _openCommission() {
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const CollectorCommissionScreen()),
+    );
+  }
+
+  void _openAiAssistant() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+          builder: (_) => const AiAssistantScreen(forCollector: true)),
     );
   }
 
@@ -284,6 +303,14 @@ class _CollectorDashboardTabState extends State<_CollectorDashboardTab> {
                           ),
                         ],
                       ),
+                      const SizedBox(height: 18),
+
+                      // ---- Recherche ----
+                      _searchCard(fr),
+                      if (_query.isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        _searchResults(fr),
+                      ],
                       const SizedBox(height: 22),
 
                       // ---- Actions rapides ----
@@ -305,49 +332,59 @@ class _CollectorDashboardTabState extends State<_CollectorDashboardTab> {
                               s.collectorTasksLabel, _openTasksTab),
                           _actionCard(RemixIcons.history_fill,
                               s.collectorHistoryLabel, _openCollectorHistory),
-                          _actionCard(RemixIcons.store_fill,
-                              s.recyclablesMarket, null),
-                          _actionCard(RemixIcons.building_fill,
-                              s.recyclingCenters, null),
                         ],
                       ),
                       const SizedBox(height: 22),
 
                       // ---- Assistant IA ----
-                      Container(
-                        padding: const EdgeInsets.all(18),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFEAF6FB),
-                          borderRadius: BorderRadius.circular(18),
-                        ),
-                        child: Row(
-                          children: [
-                            Container(
-                              width: 62,
-                              height: 62,
-                              decoration: const BoxDecoration(
-                                  color: Colors.white, shape: BoxShape.circle),
-                              child: const Icon(RemixIcons.robot_fill,
-                                  color: Color(0xFF2094C4), size: 34),
-                            ),
-                            const SizedBox(width: 14),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(s.aiAssistant,
-                                      style: TextStyle(
-                                          fontWeight: FontWeight.w800,
-                                          fontSize: 16)),
-                                  Text(s.aiAssistantDesc,
-                                      style: TextStyle(
-                                          fontSize: 13,
-                                          color: AppColors.textGray,
-                                          fontWeight: FontWeight.w700)),
-                                ],
+                      InkWell(
+                        borderRadius: BorderRadius.circular(18),
+                        onTap: _openAiAssistant,
+                        child: Container(
+                          padding: const EdgeInsets.all(18),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFEAF6FB),
+                            borderRadius: BorderRadius.circular(18),
+                          ),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 62,
+                                height: 62,
+                                decoration: const BoxDecoration(
+                                    color: Colors.white,
+                                    shape: BoxShape.circle),
+                                child: const Icon(RemixIcons.robot_fill,
+                                    color: Color(0xFF2094C4), size: 34),
                               ),
-                            ),
-                          ],
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(s.aiAssistant,
+                                        style: TextStyle(
+                                            fontWeight: FontWeight.w800,
+                                            fontSize: 16)),
+                                    Text(s.aiAssistantDesc,
+                                        style: TextStyle(
+                                            fontSize: 13,
+                                            color: AppColors.textGray,
+                                            fontWeight: FontWeight.w700)),
+                                  ],
+                                ),
+                              ),
+                              Container(
+                                width: 36,
+                                height: 36,
+                                decoration: const BoxDecoration(
+                                    color: Color(0xFF2094C4),
+                                    shape: BoxShape.circle),
+                                child: const Icon(RemixIcons.arrow_right_fill,
+                                    color: Colors.white, size: 18),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                       const SizedBox(height: 22),
@@ -421,7 +458,8 @@ class _CollectorDashboardTabState extends State<_CollectorDashboardTab> {
                         const SizedBox.shrink()
                       else
                         StreamBuilder<List<CollectionRequest>>(
-                          stream: CollectionService().watchCollectorHistory(uid),
+                          stream:
+                              CollectionService().watchCollectorHistory(uid),
                           builder: (context, historySnap) {
                             final completed = (historySnap.data ?? const [])
                                 .where(
@@ -452,6 +490,167 @@ class _CollectorDashboardTabState extends State<_CollectorDashboardTab> {
           },
         );
       },
+    );
+  }
+
+  /// Grande carte de recherche en haut du dashboard — même dégradé, rayon
+  /// et halo que la carte "Mes points" du Fournisseur (voir PointsCard),
+  /// mais avec seulement une barre de recherche parmi les demandes
+  /// disponibles (catégorie, description, adresse, nom du fournisseur).
+  Widget _searchCard(bool fr) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(18, 20, 18, 22),
+      decoration: BoxDecoration(
+        gradient: AppColors.pointsCardGradient,
+        borderRadius: BorderRadius.circular(22),
+        boxShadow: [
+          BoxShadow(
+              color: AppColors.greenMid.withOpacity(0.38),
+              blurRadius: 22,
+              offset: const Offset(0, 10)),
+          BoxShadow(
+              color: Colors.black.withOpacity(0.06),
+              blurRadius: 6,
+              offset: const Offset(0, 2)),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(fr ? "Trouver une collecte" : "Find a pickup",
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800)),
+          const SizedBox(height: 14),
+          TextField(
+            controller: _searchCtrl,
+            onChanged: (v) => setState(() => _query = v.trim().toLowerCase()),
+            textInputAction: TextInputAction.search,
+            style: const TextStyle(
+                color: AppColors.pointsCardButtonText,
+                fontWeight: FontWeight.w600),
+            decoration: InputDecoration(
+              filled: true,
+              fillColor: Colors.white,
+              hintText: fr
+                  ? "Catégorie, adresse, fournisseur…"
+                  : "Category, address, supplier…",
+              hintStyle: const TextStyle(color: Colors.black38),
+              prefixIcon: const Icon(RemixIcons.search_line,
+                  color: AppColors.pointsCardButtonText, size: 20),
+              suffixIcon: _query.isEmpty
+                  ? null
+                  : IconButton(
+                      icon: const Icon(Icons.close_rounded,
+                          color: AppColors.pointsCardButtonText, size: 20),
+                      onPressed: () => setState(() {
+                        _searchCtrl.clear();
+                        _query = '';
+                      }),
+                    ),
+              contentPadding: const EdgeInsets.symmetric(vertical: 14),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(999),
+                borderSide: BorderSide.none,
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(999),
+                borderSide: BorderSide.none,
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(999),
+                borderSide: BorderSide.none,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _searchResults(bool fr) {
+    return StreamBuilder<List<CollectionRequest>>(
+      stream: _availableStream,
+      builder: (context, snap) {
+        if (snap.connectionState == ConnectionState.waiting) {
+          return const Padding(
+            padding: EdgeInsets.symmetric(vertical: 16),
+            child: Center(
+                child: CircularProgressIndicator(
+                    color: AppColors.greenMid, strokeWidth: 2.4)),
+          );
+        }
+        final matches = (snap.data ?? const <CollectionRequest>[])
+            .where((r) => [
+                  r.category.label(fr),
+                  r.description,
+                  r.address,
+                  r.householdName,
+                ].any((f) => f.toLowerCase().contains(_query)))
+            .toList();
+        if (matches.isEmpty) {
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Text(
+                fr ? "Aucune collecte ne correspond." : "No pickup matches.",
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 12.5, color: AppColors.textGray)),
+          );
+        }
+        return Column(
+          children: matches.take(8).map((r) => _resultTile(r, fr)).toList(),
+        );
+      },
+    );
+  }
+
+  Widget _resultTile(CollectionRequest r, bool fr) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap: () => Navigator.of(context).push(MaterialPageRoute(
+          builder: (_) => CollectorRequestPreviewScreen(request: r))),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: AppColors.card,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: AppColors.line, width: 1.2),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: r.category.color.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(r.category.icon, size: 18, color: r.category.color),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text("${r.category.label(fr)} · ${r.quantityRange}",
+                      style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w800,
+                          color: AppColors.heading)),
+                  Text(r.address.isEmpty ? '—' : r.address,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style:
+                          TextStyle(fontSize: 10.5, color: AppColors.textGray)),
+                ],
+              ),
+            ),
+            Icon(RemixIcons.arrow_right_s_line, color: AppColors.textGray),
+          ],
+        ),
+      ),
     );
   }
 

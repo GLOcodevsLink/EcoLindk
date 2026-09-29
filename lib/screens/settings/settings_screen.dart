@@ -97,7 +97,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 title: lang == AppLanguage.fr ? "Comment ça marche" : "How it works",
                                 subtitle: lang == AppLanguage.fr
                                     ? "Le parcours du Fournisseur de déchets"
-                                    : "The Waste Provider's journey",
+                                    : "The Waste Supplier's journey",
                                 onTap: () => _push(const HowItWorksScreen()),
                               ),
                               _row(
@@ -123,6 +123,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                     ? "Prix de référence par kg"
                                     : "Reference prices per kg",
                                 onTap: () => _push(const PriceListScreen()),
+                              ),
+                              const SizedBox(height: 8),
+                            ],
+                            if (!isHousehold) ...[
+                              _row(
+                                icon: Icons.percent_rounded,
+                                title: lang == AppLanguage.fr ? "Tarifs de commission" : "Commission rates",
+                                subtitle: lang == AppLanguage.fr
+                                    ? "FCFA par kg collecté, selon la catégorie"
+                                    : "FCFA per kg collected, by category",
+                                onTap: () => _push(const CommissionRatesScreen()),
                               ),
                               const SizedBox(height: 8),
                             ],

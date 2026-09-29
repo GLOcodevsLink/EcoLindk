@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../widgets/waste_photo_image.dart';
 import '../../core/l10n/app_language.dart';
 import '../../core/theme.dart';
 import '../../models/collection_rating.dart';
@@ -66,7 +67,7 @@ class CollectionDetailScreen extends StatelessWidget {
                             if (r.imageUrl.isNotEmpty)
                               ClipRRect(
                                 borderRadius: BorderRadius.circular(16),
-                                child: Image.network(r.imageUrl, height: 180, width: double.infinity, fit: BoxFit.cover),
+                                child: WastePhotoImage(url: r.imageUrl, height: 180, width: double.infinity, fit: BoxFit.cover),
                               ),
                             const SizedBox(height: 16),
                             if (r.status == RequestStatus.completed) ...[

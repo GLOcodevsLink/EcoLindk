@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../core/l10n/app_language.dart';
+import '../../core/rewards_config.dart';
 import '../../core/theme.dart';
 import '../../models/collection_request.dart';
 import '../../services/auth_service.dart';
@@ -14,13 +15,10 @@ import 'subscription_screen.dart';
 /// there should be a page for the collector to view all the things for the
 /// commission fee do it".
 ///
-/// Le CALCUL de la commission (taux, base — sur le prix payé au fournisseur,
-/// sur le nombre de collectes…) n'est PAS encore défini (demande explicite :
-/// "we are going to work on the way in which we will calculate the
-/// commission fee" séparément) — cet écran affiche donc les données brutes
-/// dont ce calcul aura besoin (collectes terminées du mois, total payé aux
-/// fournisseurs) sans inventer de taux, avec une note "à définir" plutôt
-/// qu'un chiffre qui laisserait croire à une vraie facturation.
+/// Commission d'une collecte = poids confirmé × tarif de sa catégorie (voir
+/// RewardsConfig.commissionPerKgFcfa et la page "Tarifs de commission" des
+/// Réglages), figée sur la demande à la double confirmation — recalculée ici
+/// depuis le poids pour les collectes terminées avant ce changement.
 class CollectorCommissionScreen extends StatelessWidget {
   const CollectorCommissionScreen({super.key});
 
@@ -80,6 +78,8 @@ class CollectorCommissionScreen extends StatelessWidget {
                                           .toList();
                                       final total = thisMonth.fold<double>(
                                           0, (sum, r) => sum + (r.valueFcfa ?? 0));
+                                      final commission = thisMonth.fold<double>(
+                                          0, (sum, r) => sum + _commissionOf(r));
 
                                       return ListView(
                                         padding: const EdgeInsets.only(top: 14, bottom: 20),
@@ -108,13 +108,13 @@ class CollectorCommissionScreen extends StatelessWidget {
                                                   children: [
                                                     Expanded(
                                                       child: _stat(
-                                                          fr ? "Total payé aux fournisseurs" : "Total paid to providers",
+                                                          fr ? "Total payé aux fournisseurs" : "Total paid to suppliers",
                                                           "${total.toStringAsFixed(0)} FCFA"),
                                                     ),
                                                     Expanded(
                                                       child: _stat(
                                                           fr ? "Commission due" : "Commission due",
-                                                          fr ? "À définir" : "To be defined"),
+                                                          "${commission.toStringAsFixed(0)} FCFA"),
                                                     ),
                                                   ],
                                                 ),
@@ -126,8 +126,8 @@ class CollectorCommissionScreen extends StatelessWidget {
                                             padding: const EdgeInsets.symmetric(vertical: 10),
                                             child: Text(
                                                 fr
-                                                    ? "Le mode de calcul de la commission mensuelle n'est pas encore défini — cette page sera mise à jour dès qu'il le sera."
-                                                    : "How the monthly commission is calculated hasn't been defined yet — this page will be updated once it is.",
+                                                    ? "Commission = poids collecté × tarif de la catégorie (voir Réglages > Tarifs de commission)."
+                                                    : "Commission = weight collected × the category's rate (see Settings > Commission rates).",
                                                 style: TextStyle(
                                                     fontSize: 11.5, color: AppColors.textGray, height: 1.4)),
                                           ),
@@ -204,17 +204,28 @@ class CollectorCommissionScreen extends StatelessWidget {
               children: [
                 Text(r.category.label(fr),
                     style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: AppColors.mainText)),
-                Text("${(r.weightKg ?? 0).toStringAsFixed(1)} kg",
+                Text("${(r.weightKg ?? 0).toStringAsFixed(1)} kg · ${(r.valueFcfa ?? 0).toStringAsFixed(0)} FCFA",
                     style: TextStyle(fontSize: 10.5, color: AppColors.textGray)),
               ],
             ),
           ),
-          Text("${(r.valueFcfa ?? 0).toStringAsFixed(0)} FCFA",
-              style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w800, color: AppColors.greenDeep)),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(fr ? "Commission" : "Commission",
+                  style: TextStyle(fontSize: 10, color: AppColors.textGray)),
+              Text("${_commissionOf(r).toStringAsFixed(0)} FCFA",
+                  style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w800, color: AppColors.greenDeep)),
+            ],
+          ),
         ],
       ),
     );
   }
+
+  static double _commissionOf(CollectionRequest r) =>
+      r.commissionFcfa ??
+      RewardsConfig.commissionForCollection(r.category, r.weightKg ?? 0);
 
   String _monthLabel(DateTime now, bool fr) {
     const frMonths = [
