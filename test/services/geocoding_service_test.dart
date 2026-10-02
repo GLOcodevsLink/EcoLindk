@@ -9,7 +9,7 @@ void main() {
   GeocodingService service(MockClientHandler handler) =>
       GeocodingService(client: MockClient(handler));
 
-  test('interroge Nominatim limité au Cameroun et parse le premier résultat', () async {
+  test('queries Nominatim restricted to Cameroon and parses the first result', () async {
     late http.Request sent;
     final result = await service((req) async {
       sent = req;
@@ -33,17 +33,17 @@ void main() {
   Matcher throwsCode(String code) =>
       throwsA(isA<GeocodingException>().having((e) => e.code, 'code', code));
 
-  test('adresse vide : aucune requête', () async {
+  test('empty address: no request', () async {
     await expectLater(service((_) async => fail('ne doit pas appeler')).geocode('   '),
         throwsCode('empty-address'));
   });
 
-  test('aucun résultat → not-found', () async {
+  test('no result → not-found', () async {
     await expectLater(
         service((_) async => http.Response('[]', 200)).geocode('xyz'), throwsCode('not-found'));
   });
 
-  test('coordonnées illisibles → not-found', () async {
+  test('unreadable coordinates → not-found', () async {
     await expectLater(
         service((_) async => http.Response(
             jsonEncode([
@@ -58,12 +58,12 @@ void main() {
         service((_) async => http.Response('', 503)).geocode('xyz'), throwsCode('http-error'));
   });
 
-  test('réponse non JSON → http-error', () async {
+  test('non-JSON response → http-error', () async {
     await expectLater(service((_) async => http.Response('<html>', 200)).geocode('xyz'),
         throwsCode('http-error'));
   });
 
-  test('pas de réseau → network', () async {
+  test('no network → network', () async {
     await expectLater(service((_) async => throw http.ClientException('offline')).geocode('xyz'),
         throwsCode('network'));
   });

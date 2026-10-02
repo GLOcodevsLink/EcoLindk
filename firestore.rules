@@ -16,6 +16,15 @@ service cloud.firestore {
       return request.resource.data.diff(resource.data).affectedKeys().hasOnly(fields);
     }
 
+    // Administrateur du tableau de bord web (lib/admin/) : un document
+    // `admins/{uid}` créé À LA MAIN dans la console Firebase — aucun client
+    // ne peut s'y ajouter (voir match /admins plus bas). Pas de "custom
+    // claims" : il faudrait le SDK Admin, donc un serveur (plan Spark).
+    function isAdmin() {
+      return signedIn()
+          && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
     // L'id d'une conversation est formé des deux uid triés, joints par "_"
     // (voir MessagingService) — les uid Firebase ne contiennent jamais de
     // "_". On sait donc qui y participe sans lire aucun document, ce qui
@@ -38,18 +47,54 @@ service cloud.firestore {
     // Une fois le rôle fixé, ni `role` ni `verificationStatus` ne peuvent
     // plus changer depuis le client.
     match /users/{userId} {
-      allow read: if request.auth != null && request.auth.uid == userId;
+      allow read: if (request.auth != null && request.auth.uid == userId) || isAdmin();
 
-      allow create: if request.auth != null && request.auth.uid == userId;
+      // Marque "vérification d'email requise" (posée à l'inscription, voir
+      // AuthService.registerAccount) : impossible de s'en débarrasser tant
+      // que l'email n'est pas vérifié — ni en la retirant de sa fiche, ni en
+      // supprimant puis recréant sa fiche sans elle. Les comptes Google/Apple
+      // (email déjà vérifié) et les anciens comptes ne sont pas concernés.
+      function emailIsVerified() {
+        return request.auth.token.email_verified == true;
+      }
+
+      // Le Collecteur n'a pas de vérification d'email (demande explicite) :
+      // fiche d'un Collecteur (en cours d'inscription ou finalisé), sans la
+      // marque.
+      function collectorExempt() {
+        return request.resource.data.get('intendedRole', '') == 'collector'
+               && request.resource.data.get('role', null) in [null, 'collector'];
+      }
+
+      allow create: if request.auth != null && request.auth.uid == userId
+                    && (emailIsVerified()
+                        || collectorExempt()
+                        || request.resource.data.get('emailVerificationRequired', false) == true);
 
       allow update: if request.auth != null
                     && request.auth.uid == userId
+                    && (emailIsVerified()
+                        || collectorExempt()
+                        || resource.data.get('emailVerificationRequired', false) != true
+                        || request.resource.data.get('emailVerificationRequired', false) == true)
+                    // L'exemption Collecteur ne sert pas de raccourci : devenir
+                    // Fournisseur exige toujours l'email vérifié ou la marque.
+                    && (!(resource.data.role == null && request.resource.data.role == 'household')
+                        || emailIsVerified()
+                        || request.resource.data.get('emailVerificationRequired', false) == true)
                     && (
                          (
                            resource.data.role == null &&
                            (request.resource.data.role == 'household' ||
                             request.resource.data.role == 'collector') &&
                            request.resource.data.verificationStatus == 'verified'
+                         ) ||
+                         (
+                           // Inscription reprise avant le choix du rôle :
+                           // la fiche peut être réécrite, rôle toujours vide.
+                           resource.data.role == null &&
+                           request.resource.data.role == null &&
+                           request.resource.data.verificationStatus == null
                          ) ||
                          (
                            resource.data.role != null &&
@@ -83,7 +128,10 @@ service cloud.firestore {
       // (nettoyage lors de AuthService.deleteAccount).
       allow delete: if request.auth != null
                     && resource.data.email == request.auth.token.email;
-      allow update: if false;
+      // Un numéro peut être ré-associé, mais seulement à SON PROPRE email
+      // (ex. inscription refaite après suppression d'un compte).
+      allow update: if signedIn()
+                    && request.resource.data.email == request.auth.token.email;
     }
 
     // ------------------------------------------------------------------
@@ -117,7 +165,8 @@ service cloud.firestore {
       allow read: if request.auth != null
                   && (resource.data.householdUid == request.auth.uid
                       || resource.data.collectorUid == request.auth.uid
-                      || resource.data.status == 'pending');
+                      || resource.data.status == 'pending'
+                      || isAdmin());
 
       // Chaque transition autorisée ne peut toucher QUE ses propres champs
       // (`affectedKeys().hasOnly`) : ni le collecteur ne peut clôturer une
@@ -173,6 +222,13 @@ service cloud.firestore {
             && request.resource.data.status == 'accepted'
             && request.resource.data.resultRejected == true
             && changedOnly(['status', 'pendingWeightKg', 'pendingPriceFcfa', 'scanCode', 'resultRejected']))
+          ||
+          // L'administrateur retire un post encore libre (modération) —
+          // même transition que l'annulation par son Fournisseur.
+          (isAdmin()
+            && resource.data.status == 'pending'
+            && request.resource.data.status == 'cancelled'
+            && changedOnly(['status', 'cancelledByAdmin']))
       );
 
       allow delete: if false;
@@ -228,6 +284,7 @@ service cloud.firestore {
     // réclamer des points (collecte, parrainage) ou les convertir.
     match /wallets/{uid} {
       allow read, write: if request.auth != null && request.auth.uid == uid;
+      allow read: if isAdmin();
 
       match /transactions/{txId} {
         allow read, create: if request.auth != null && request.auth.uid == uid;
@@ -240,6 +297,61 @@ service cloud.firestore {
       match /redemptions/{redemptionId} {
         allow read, write: if request.auth != null && request.auth.uid == uid;
       }
+    }
+
+    // Phone number shared with chat contacts (Call button, see
+    // ContactService). Rules apply to whole documents, never to single
+    // fields, so the number lives alone here instead of opening users/{uid}.
+    // Readable by its owner, or by someone who shares a conversation with
+    // them. Conversation ids are the two uids sorted and joined by "_" (see
+    // conversationMembers), so both orders are checked.
+    function sharesConversation(a, b) {
+      return exists(/databases/$(database)/documents/conversations/$(a + '_' + b))
+          || exists(/databases/$(database)/documents/conversations/$(b + '_' + a));
+    }
+
+    match /userContacts/{uid} {
+      allow get: if signedIn()
+                 && (request.auth.uid == uid || sharesConversation(request.auth.uid, uid));
+      allow list: if false;
+      allow create, update: if signedIn()
+                            && request.auth.uid == uid
+                            && request.resource.data.keys().hasOnly(['phone'])
+                            && request.resource.data.phone is string
+                            && request.resource.data.phone.matches('^[+][0-9]{8,15}$');
+      allow delete: if signedIn() && request.auth.uid == uid;
+    }
+
+    // Règlements de commission du Collecteur — voir CommissionService. Créés
+    // "pending" par le Collecteur lui-même, puis seule l'issue est notée.
+    // Limite assumée du mode test (simulation / Notch Pay sandbox) : c'est
+    // l'app qui constate le paiement. En argent réel, le statut devra être
+    // écrit uniquement par un webhook Notch Pay côté serveur.
+    match /commissionPayments/{paymentId} {
+      allow read: if (signedIn() && resource.data.collectorUid == request.auth.uid) || isAdmin();
+      allow create: if signedIn()
+                    && request.resource.data.collectorUid == request.auth.uid
+                    && request.resource.data.status == 'pending'
+                    && request.resource.data.amountFcfa is int
+                    && request.resource.data.amountFcfa > 0;
+      allow update: if signedIn()
+                    && resource.data.collectorUid == request.auth.uid
+                    && resource.data.status == 'pending'
+                    && changedOnly(['status', 'message', 'completedAt']);
+      allow delete: if false;
+    }
+
+    // Conversions de points de tous les Fournisseurs, en une seule requête
+    // (collectionGroup) pour l'onglet Paiements du tableau de bord admin.
+    match /{path=**}/redemptions/{redemptionId} {
+      allow read: if isAdmin();
+    }
+
+    // Liste des administrateurs : chacun peut seulement vérifier s'il en
+    // fait partie ; ajouts et retraits uniquement depuis la console.
+    match /admins/{uid} {
+      allow get: if signedIn() && request.auth.uid == uid;
+      allow list, write: if false;
     }
 
     // Index public "code de parrainage -> propriétaire", comme phone_lookup.

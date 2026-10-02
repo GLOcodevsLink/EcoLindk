@@ -32,7 +32,7 @@ CollectionRequest post(String id, (double, double) p) => CollectionRequest(
     );
 
 void main() {
-  group('ciblage des notifications par zones de collecte', () {
+  group('notification targeting by collection zone', () {
     final collectors = {
       'A': {
         'zones': [zone('Mvan', mvan), zone('Bastos', bastos), zone('Essos', essos)]
@@ -42,7 +42,7 @@ void main() {
       },
     };
 
-    test('post à Bastos : A notifié une seule fois (plusieurs zones proches), D non', () {
+    test('post in Bastos: A notified only once (several nearby zones), D not', () {
       final matches = collectorsForPost(
           latitude: bastos.$1, longitude: bastos.$2, city: 'Yaoundé', neighborhood: 'Bastos',
           collectorLocations: collectors);
@@ -51,14 +51,14 @@ void main() {
       expect(matches.single.distanceKm, lessThan(0.1));
     });
 
-    test('post hors des zones (Nkolbisson, ~7 km de la zone la plus proche) : personne', () {
+    test('post outside the zones (Nkolbisson, ~7 km from the nearest zone): nobody', () {
       final matches = collectorsForPost(
           latitude: nkolbisson.$1, longitude: nkolbisson.$2, city: 'Yaoundé', neighborhood: 'Nkolbisson',
           collectorLocations: collectors);
       expect(matches, isEmpty);
     });
 
-    test('même quartier et même ville : éligible même sans coordonnées', () {
+    test('same neighborhood and city: eligible even without coordinates', () {
       final matches = collectorsForPost(
         latitude: nkolbisson.$1,
         longitude: nkolbisson.$2,
@@ -76,13 +76,13 @@ void main() {
       expect(matches.single.distanceKm, isNull);
     });
 
-    test('rayon réglable', () {
+    test('configurable radius', () {
       final far = collectorsForPost(
           latitude: nkolbisson.$1, longitude: nkolbisson.$2, collectorLocations: collectors, radiusKm: 12);
       expect(far.map((m) => m.collectorUid), ['A']);
     });
 
-    test('ancien document (un seul point, sans zones) toujours pris en compte', () {
+    test('legacy document (single point, no zones) still supported', () {
       final matches = collectorsForPost(
         latitude: bastos.$1,
         longitude: bastos.$2,
@@ -94,15 +94,15 @@ void main() {
     });
   });
 
-  group('recherche "Autour de moi" par GPS actuel', () {
+  group('Around me search by current GPS', () {
     final posts = [post('bastos', bastos), post('nkol', nkolbisson), post('douala', akwaDouala)];
 
-    test('collecteur à Nkolbisson (hors de ses zones) : trouve les posts autour de lui', () {
+    test('collector in Nkolbisson (outside their zones): finds posts around them', () {
       final found = postsAroundPosition(posts, ll.LatLng(nkolbisson.$1, nkolbisson.$2), radiusKm: 5);
       expect(found.map((e) => e.$1.id), ['nkol']);
     });
 
-    test('trié du plus proche au plus loin, Douala exclu', () {
+    test('sorted nearest first, Douala excluded', () {
       final found = postsAroundPosition(posts, ll.LatLng(nkolbisson.$1, nkolbisson.$2), radiusKm: 20);
       expect(found.map((e) => e.$1.id), ['nkol', 'bastos']);
       expect(found.first.$2, lessThan(found.last.$2));

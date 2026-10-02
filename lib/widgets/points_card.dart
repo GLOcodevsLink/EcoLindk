@@ -143,28 +143,33 @@ class PointsCard extends StatelessWidget {
                               borderRadius:
                                   BorderRadius.all(Radius.circular(999)),
                             ),
-                            // FittedBox : certains libellés de bouton (ex.
-                            // "Voir le portefeuille") sont nettement plus
-                            // longs que d'autres ("Voir mon profil") — sans
-                            // ça le texte déborde de la pastille sur les
-                            // écrans étroits une fois la place prise par le
-                            // badge trophée.
-                            child: FittedBox(
-                              fit: BoxFit.scaleDown,
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(buttonLabel,
-                                      style: const TextStyle(
-                                          color: AppColors.pointsCardButtonText,
-                                          fontSize: 11.5,
-                                          fontWeight: FontWeight.w700)),
-                                  const SizedBox(width: 4),
-                                  const Icon(RemixIcons.arrow_right_fill,
-                                      color: AppColors.pointsCardButtonText,
-                                      size: 13),
-                                ],
-                              ),
+                            // Largeur minimale commune + flèche à taille
+                            // fixe (demande explicite : même rendu en
+                            // anglais et en français) — seul le libellé se
+                            // réduit si "Voir le portefeuille" manque de
+                            // place ; la pastille ne rétrécit plus en
+                            // anglais ("View wallet", plus court).
+                            constraints: const BoxConstraints(minWidth: 150),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Flexible(
+                                  child: FittedBox(
+                                    fit: BoxFit.scaleDown,
+                                    child: Text(buttonLabel,
+                                        maxLines: 1,
+                                        style: const TextStyle(
+                                            color: AppColors.pointsCardButtonText,
+                                            fontSize: 11.5,
+                                            fontWeight: FontWeight.w700)),
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                const Icon(RemixIcons.arrow_right_fill,
+                                    color: AppColors.pointsCardButtonText,
+                                    size: 13),
+                              ],
                             ),
                           ),
                         ),

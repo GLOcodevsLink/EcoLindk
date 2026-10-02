@@ -37,8 +37,8 @@ const yaounde = PlaceResult(
 );
 
 void main() {
-  group('villes', () {
-    test('"Yaou" : villes du pays choisi, avec coordonnées et emprise', () async {
+  group('cities', () {
+    test('Yaou: cities of the selected country, with coordinates and bounds', () async {
       late Uri sent;
       final s = PlaceSearchService(client: MockClient((req) async {
         sent = req.url;
@@ -60,15 +60,15 @@ void main() {
       expect(sent.queryParameters['q'], 'Yaou');
     });
 
-    test('moins de 2 lettres : aucune requête', () async {
+    test('fewer than 2 letters: no request', () async {
       final s = PlaceSearchService(client: MockClient((_) async => fail('ne doit pas appeler')));
       expect(await s.searchCities(' Y '), isEmpty);
       expect(await s.searchCities(''), isEmpty);
     });
   });
 
-  group('quartiers', () {
-    test('ne garde que les vrais quartiers de la ville, sans doublon', () async {
+  group('neighborhoods', () {
+    test('keeps only real neighborhoods of the city, no duplicates', () async {
       late Uri sent;
       final s = PlaceSearchService(client: MockClient((req) async {
         sent = req.url;
@@ -94,28 +94,28 @@ void main() {
       expect(sent.queryParameters['bbox'], '11.4111836,3.7134029,11.5748061,3.9691958');
     });
 
-    test('aucun résultat → liste vide', () async {
+    test('no result → empty list', () async {
       final s = PlaceSearchService(client: MockClient((_) async => photon(const [])));
       expect(await s.searchNeighborhoods('Zzz', city: yaounde), isEmpty);
     });
   });
 
-  group('erreurs', () {
-    test('pas de réseau → network', () async {
+  group('errors', () {
+    test('no network → network', () async {
       final s = PlaceSearchService(client: MockClient((_) async => throw http.ClientException('offline')));
       await expectLater(s.searchCities('Yaou'),
           throwsA(isA<PlaceSearchException>().having((e) => e.code, 'code', 'network')));
     });
 
-    test('erreur serveur → http-error', () async {
+    test('server error → http-error', () async {
       final s = PlaceSearchService(client: MockClient((_) async => http.Response('', 503)));
       await expectLater(s.searchCities('Yaou'),
           throwsA(isA<PlaceSearchException>().having((e) => e.code, 'code', 'http-error')));
     });
   });
 
-  group('géocodage inverse du post (Nominatim)', () {
-    test('coordonnées → quartier et ville', () async {
+  group('reverse geocoding of the post (Nominatim)', () {
+    test('coordinates → neighborhood and city', () async {
       final g = GeocodingService(client: MockClient((req) async {
         expect(req.url.path, '/reverse');
         return http.Response.bytes(
@@ -129,7 +129,7 @@ void main() {
       expect(r.city, 'Yaoundé');
     });
 
-    test('erreur réseau → null, jamais bloquant', () async {
+    test('network error → null, never blocking', () async {
       final g = GeocodingService(client: MockClient((_) async => throw http.ClientException('offline')));
       expect(await g.reverse(3.895, 11.51), isNull);
     });

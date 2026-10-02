@@ -1,20 +1,27 @@
+import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:file_selector/file_selector.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import '../core/theme.dart';
+import '../core/validators.dart';
 import '../models/user_role.dart';
 import '../services/auth_service.dart';
+import '../services/waste_photo_service.dart';
 import 'collector/collection_zones_screen.dart';
 import '../widgets/decorative_leaves.dart';
 import '../widgets/gradient_pill_button.dart';
+import '../widgets/user_avatar.dart';
 import '../core/l10n/app_language.dart';
 import '../core/l10n/strings.dart';
 
 /// Modification du profil, ouverte en tapant l'avatar sur SettingsScreen.
 ///
-/// Modifiable : prénom, nom, et adresse facultative (Ménage) ou entreprise
-/// (Collecteur) ; les zones de collecte du Collecteur se gèrent sur leur
+/// Modifiable : photo de profil (enregistrée aussitôt choisie), prénom,
+/// nom, entreprise ; les zones de collecte du Collecteur se gèrent sur leur
 /// propre écran (voir CollectionZonesScreen), enregistré à chaque
-/// changement. Email et téléphone sont affichés en lecture
+/// changement. Plus d'adresse : chaque post a la sienne. Email et téléphone sont affichés en lecture
 /// seule : les changer nécessiterait une re-vérification côté Firebase Auth
 /// (email) ou une ré-indexation de `phone_lookup` (téléphone), hors scope
 /// actuel.
@@ -32,8 +39,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   final _firstNameController = TextEditingController();
   final _lastNameController = TextEditingController();
-  final _addressController = TextEditingController();
   final _companyNameController = TextEditingController();
+
+  /// Photo de profil (référence `firestore://wastePhotos/<id>`), `null` si
+  /// aucune.
+  String? _photoUrl;
+  bool _photoBusy = false;
 
   UserRole _role = UserRole.household;
   bool _loaded = false;
@@ -53,7 +64,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
   void dispose() {
     _firstNameController.dispose();
     _lastNameController.dispose();
-    _addressController.dispose();
     _companyNameController.dispose();
     super.dispose();
   }
@@ -66,7 +76,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _loaded = true;
     _firstNameController.text = (data['firstName'] as String?) ?? '';
     _lastNameController.text = (data['lastName'] as String?) ?? '';
-    _addressController.text = (data['address'] as String?) ?? '';
+    _photoUrl = data['photoUrl'] as String?;
     _companyNameController.text = (data['companyName'] as String?) ?? '';
     _role = (data['role'] as String?) == UserRole.collector.name
         ? UserRole.collector
@@ -88,9 +98,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
       'lastName': lastName,
       'fullName': '$firstName $lastName'.trim(),
     };
-    if (_role == UserRole.household) {
-      fields['address'] = _addressController.text.trim();
-    } else {
+    // Entreprise : réservée au Collecteur.
+    if (_role == UserRole.collector) {
       final company = _companyNameController.text.trim();
       fields['companyName'] = company.isEmpty ? null : company;
     }
@@ -107,6 +116,104 @@ class _ProfileScreenState extends State<ProfileScreen> {
           .showSnackBar(SnackBar(content: Text(s.authError('unknown'))));
     } finally {
       if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
+  bool get _fr => appLanguage.value == AppLanguage.fr;
+
+  bool get _isDesktop => !kIsWeb && (Platform.isLinux || Platform.isWindows || Platform.isMacOS);
+
+  void _snack(String message) =>
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+
+  /// Choix de la photo : caméra (sauf sur ordinateur), galerie, ou retrait.
+  Future<void> _changePhoto() async {
+    final fr = _fr;
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: AppColors.card,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            if (!_isDesktop)
+              ListTile(
+                leading: const Icon(Icons.photo_camera_rounded, color: AppColors.greenDeep),
+                title: Text(fr ? "Prendre une photo" : "Take a photo"),
+                onTap: () => Navigator.of(ctx).pop('camera'),
+              ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_rounded, color: AppColors.greenDeep),
+              title: Text(fr ? "Choisir dans la galerie" : "Choose from gallery"),
+              onTap: () => Navigator.of(ctx).pop('gallery'),
+            ),
+            if (_photoUrl != null)
+              ListTile(
+                leading: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
+                title: Text(fr ? "Supprimer la photo" : "Remove photo",
+                    style: const TextStyle(color: Colors.redAccent)),
+                onTap: () => Navigator.of(ctx).pop('remove'),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (choice == null || !mounted) return;
+    final uid = _authService.currentUser?.uid;
+    if (uid == null) return;
+
+    if (choice == 'remove') {
+      await _savePhoto(uid, null);
+      return;
+    }
+    String? path;
+    try {
+      if (choice == 'camera') {
+        path = (await ImagePicker()
+                .pickImage(source: ImageSource.camera, maxWidth: 1600, maxHeight: 1600, imageQuality: 90))
+            ?.path;
+      } else {
+        const images = XTypeGroup(label: 'images', extensions: ['jpg', 'jpeg', 'png', 'webp']);
+        path = (await openFile(acceptedTypeGroups: [images]))?.path;
+      }
+    } catch (_) {
+      path = null;
+    }
+    if (path == null || !mounted) return;
+
+    setState(() => _photoBusy = true);
+    try {
+      final ref = await WastePhotoService().uploadAvatar(uid, await File(path).readAsBytes());
+      await _savePhoto(uid, ref);
+    } catch (e) {
+      debugPrint('ProfileScreen._changePhoto failed: $e');
+      if (mounted) {
+        setState(() => _photoBusy = false);
+        _snack(fr ? "Photo illisible ou envoi impossible. Réessayez." : "Unreadable photo or upload failed. Try again.");
+      }
+    }
+  }
+
+  Future<void> _savePhoto(String uid, String? ref) async {
+    final fr = _fr;
+    setState(() => _photoBusy = true);
+    try {
+      await _authService.updateProfilePhoto(uid, ref);
+      if (!mounted) return;
+      setState(() {
+        _photoUrl = ref;
+        _photoBusy = false;
+      });
+      _snack(ref == null
+          ? (fr ? "Photo supprimée." : "Photo removed.")
+          : (fr ? "Photo de profil mise à jour." : "Profile photo updated."));
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _photoBusy = false);
+      _snack(fr ? "Enregistrement impossible. Vérifiez votre connexion." : "Couldn't save. Check your connection.");
     }
   }
 
@@ -170,41 +277,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ],
                   ),
                   const SizedBox(height: 10),
-                  Center(
-                    child: Container(
-                      width: 84,
-                      height: 84,
-                      decoration: const BoxDecoration(
-                          gradient: AppColors.buttonGradient,
-                          shape: BoxShape.circle),
-                      child: Center(
-                        child: Text(_initials(),
-                            style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 28,
-                                fontWeight: FontWeight.w800)),
-                      ),
-                    ),
-                  ),
+                  Center(child: _photoPicker()),
                   const SizedBox(height: 26),
-                  _field(_firstNameController, s.firstName, Icons.person_outline),
+                  _field(_firstNameController, s.firstName, Icons.person_outline,
+                      validator: (v) => Validators.personName(v, fr: _fr)),
                   const SizedBox(height: 12),
-                  _field(_lastNameController, s.lastName, Icons.person_outline),
+                  _field(_lastNameController, s.lastName, Icons.person_outline,
+                      validator: (v) => Validators.personName(v, fr: _fr)),
                   const SizedBox(height: 12),
                   _readOnlyField(s.email, _email, Icons.email_outlined),
                   const SizedBox(height: 12),
                   _readOnlyField(s.phoneLabel, _phone, Icons.phone_outlined),
                   const SizedBox(height: 12),
-                  if (_role == UserRole.household)
-                    // Facultative : l'inscription ne la demande plus, chaque
-                    // post a sa propre adresse (GPS ou tapée).
-                    _field(_addressController, s.address, Icons.home_outlined, required: false)
-                  else ...[
+                  if (_role == UserRole.collector) ...[
                     _zonesTile(),
                     const SizedBox(height: 12),
                     _field(_companyNameController, s.companyNameOptional,
                         Icons.apartment_outlined,
-                        required: false),
+                        required: false, validator: (v) => Validators.companyName(v, fr: _fr)),
                   ],
                   const SizedBox(height: 24),
                   _isSaving
@@ -255,25 +345,69 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  String _initials() {
-    final first = _firstNameController.text.trim();
-    final last = _lastNameController.text.trim();
-    if (first.isEmpty && last.isEmpty) return '?';
-    final a = first.isNotEmpty ? first.substring(0, 1) : '';
-    final b = last.isNotEmpty ? last.substring(0, 1) : '';
-    return (a + b).toUpperCase();
+  /// Avatar touchable : photo (ou initiales) avec un badge appareil photo.
+  Widget _photoPicker() {
+    final fr = _fr;
+    return Column(
+      children: [
+        GestureDetector(
+          onTap: _photoBusy ? null : _changePhoto,
+          child: Stack(
+            children: [
+              UserAvatar(
+                photoUrl: _photoUrl,
+                fullName: '${_firstNameController.text} ${_lastNameController.text}',
+                size: 96,
+              ),
+              if (_photoBusy)
+                const Positioned.fill(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(color: Colors.black38, shape: BoxShape.circle),
+                    child: Center(
+                      child: SizedBox(
+                          width: 26, height: 26, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.4)),
+                    ),
+                  ),
+                ),
+              Positioned(
+                right: 0,
+                bottom: 0,
+                child: Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    color: AppColors.greenDeep,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: AppColors.surface, width: 3),
+                  ),
+                  child: const Icon(Icons.photo_camera_rounded, color: Colors.white, size: 16),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        TextButton(
+          onPressed: _photoBusy ? null : _changePhoto,
+          child: Text(_photoUrl == null
+              ? (fr ? "Ajouter une photo" : "Add a photo")
+              : (fr ? "Changer la photo" : "Change photo")),
+        ),
+      ],
+    );
   }
 
   Widget _field(TextEditingController controller, String label, IconData icon,
-      {bool required = true}) {
+      {bool required = true, String? Function(String?)? validator}) {
     return TextFormField(
       controller: controller,
       decoration: InputDecoration(labelText: label, prefixIcon: Icon(icon, size: 19)),
-      validator: required
-          ? (v) => (v == null || v.trim().isEmpty)
-              ? AppStrings.of(appLanguage.value).requiredField
-              : null
-          : null,
+      validator: validator ??
+          (required
+              ? (v) => (v == null || v.trim().isEmpty)
+                  ? AppStrings.of(appLanguage.value).requiredField
+                  : null
+              : null),
     );
   }
 

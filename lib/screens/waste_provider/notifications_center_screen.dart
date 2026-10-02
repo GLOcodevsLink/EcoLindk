@@ -212,6 +212,12 @@ class _NotificationsCenterScreenState extends State<NotificationsCenterScreen> {
                 margin: const EdgeInsets.only(top: 4),
                 decoration: const BoxDecoration(color: AppColors.greenMid, shape: BoxShape.circle),
               ),
+            // Montre que la notification s'ouvre (post ou collecte liés).
+            if (n.relatedRequestId != null)
+              Padding(
+                padding: const EdgeInsets.only(left: 4),
+                child: Icon(Icons.chevron_right_rounded, color: AppColors.textGray, size: 22),
+              ),
           ],
         ),
       ),

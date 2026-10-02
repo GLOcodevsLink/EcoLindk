@@ -7,11 +7,11 @@ const bastos = CollectionZone(
 
 void main() {
   group('CollectionZone', () {
-    test('libellé pays → ville → quartier', () {
+    test('label country → city → neighborhood', () {
       expect(bastos.label, 'Cameroon → Yaoundé → Bastos');
     });
 
-    test('doublon détecté sans tenir compte des accents ni de la casse', () {
+    test('duplicate detected regardless of accents and case', () {
       const a = CollectionZone(country: 'Cameroon', countryCode: 'CM', city: 'Yaoundé', neighborhood: 'Éssos');
       const b = CollectionZone(country: 'Cameroun', countryCode: 'cm', city: 'yaounde', neighborhood: 'essos ');
       expect(a.key, b.key);
@@ -19,14 +19,14 @@ void main() {
       expect(a.key == bastos.key, isFalse);
     });
 
-    test('aller-retour Firestore conserve les coordonnées', () {
+    test('Firestore round trip keeps the coordinates', () {
       final back = CollectionZone.fromMap(bastos.toMap());
       expect(back.latitude, 3.895);
       expect(back.longitude, 11.51);
       expect(back.key, bastos.key);
     });
 
-    test('même quartier dans la même ville', () {
+    test('same neighborhood in the same city', () {
       expect(bastos.sameNeighborhoodAs('Yaoundé', 'bastos'), isTrue);
       expect(bastos.sameNeighborhoodAs('Douala', 'Bastos'), isFalse);
       expect(bastos.sameNeighborhoodAs('Yaoundé', 'Mvan'), isFalse);
@@ -34,8 +34,8 @@ void main() {
     });
   });
 
-  group('compatibilité avec l\'ancien champ collectionZone', () {
-    test('nouvelle liste prioritaire', () {
+  group('backward compatibility with the legacy collectionZone field', () {
+    test('new list takes precedence', () {
       final zones = CollectionZone.fromUserData({
         'collectionZone': 'Mendong Yaoundé',
         'collectionZones': [bastos.toMap()],
@@ -43,7 +43,7 @@ void main() {
       expect(zones.single.neighborhood, 'Bastos');
     });
 
-    test('ancien champ seul → une zone, avec le point géocodé existant', () {
+    test('legacy field only → one zone, with the existing geocoded point', () {
       final zones = CollectionZone.fromUserData({'collectionZone': 'Mvan'},
           legacyLatitude: 3.82, legacyLongitude: 11.525);
       expect(zones, hasLength(1));
@@ -52,23 +52,23 @@ void main() {
       expect(zones.single.latitude, 3.82);
     });
 
-    test('aucune zone', () {
+    test('no zone', () {
       expect(CollectionZone.fromUserData({}), isEmpty);
       expect(CollectionZone.fromUserData(null), isEmpty);
     });
   });
 
-  group('pays depuis l\'indicatif (country_picker)', () {
-    test('+237 → Cameroun', () {
+  group('country from dialing code (country_picker)', () {
+    test('+237 → Cameroon', () {
       expect(countryFromPhone('+237650123456')!.countryCode, 'CM');
     });
 
-    test('indicatifs de longueurs différentes', () {
+    test('dialing codes of different lengths', () {
       expect(countryFromPhone('+33612345678')!.countryCode, 'FR');
       expect(countryFromPhone('+2250102030405')!.countryCode, 'CI');
     });
 
-    test('numéro vide ou sans indicatif → rien', () {
+    test('empty number or no dialing code → nothing', () {
       expect(countryFromPhone(''), isNull);
       expect(countryFromPhone(null), isNull);
       expect(countryFromPhone('650123456'), isNull);

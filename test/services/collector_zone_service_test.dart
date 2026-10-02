@@ -24,7 +24,7 @@ void main() {
   Future<Map<String, dynamic>> locationDoc() async =>
       (await db.collection('collectorLocations').doc('c1').get()).data()!;
 
-  test('ajouter une zone : enregistrée dans le profil ET dans l\'index de ciblage', () async {
+  test('adding a zone: saved in the profile AND in the targeting index', () async {
     await service.add('c1', zone('Bastos', lat: 3.895, lng: 11.51));
 
     final saved = (await userDoc())['collectionZones'] as List;
@@ -36,7 +36,7 @@ void main() {
     expect(index['latitude'], 3.895);
   });
 
-  test('plusieurs zones, relues après "réouverture" (nouveau service)', () async {
+  test('several zones, read back after reopening (new service)', () async {
     await service.add('c1', zone('Bastos'));
     await service.add('c1', zone('Mvan'));
     await service.add('c1', zone('Essos'));
@@ -45,7 +45,7 @@ void main() {
     expect(reloaded.map((z) => z.neighborhood), ['Bastos', 'Mvan', 'Essos']);
   });
 
-  test('6e zone refusée, rien n\'est écrit', () async {
+  test('6th zone rejected, nothing is written', () async {
     for (final n in ['A', 'B', 'C', 'D', 'E']) {
       await service.add('c1', zone(n));
     }
@@ -53,13 +53,13 @@ void main() {
     expect(((await userDoc())['collectionZones'] as List), hasLength(5));
   });
 
-  test('doublon refusé (même avec accents/casse différents)', () async {
+  test('duplicate rejected (even with different accents or case)', () async {
     await service.add('c1', zone('Éssos'));
     await expectLater(service.add('c1', zone('essos')), throwsZoneError('duplicate'));
     expect(((await userDoc())['collectionZones'] as List), hasLength(1));
   });
 
-  test('supprimer et modifier une zone', () async {
+  test('removing and editing a zone', () async {
     await service.add('c1', zone('Bastos'));
     await service.add('c1', zone('Mvan'));
 
@@ -71,7 +71,7 @@ void main() {
     expect(((await locationDoc())['zones'] as List).single['neighborhood'], 'Essos');
   });
 
-  test('ancien compte : l\'ancienne zone texte est relue, sans être supprimée', () async {
+  test('legacy account: the old text zone is read back, never deleted', () async {
     await db.collection('users').doc('old').set({'role': 'collector', 'collectionZone': 'Mendong Yaoundé'});
     await db.collection('collectorLocations').doc('old').set({'latitude': 3.835, 'longitude': 11.473});
 

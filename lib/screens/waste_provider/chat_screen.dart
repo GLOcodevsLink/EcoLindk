@@ -3,6 +3,7 @@ import '../../core/l10n/app_language.dart';
 import '../../core/theme.dart';
 import '../../models/conversation.dart';
 import '../../services/messaging_service.dart';
+import '../../widgets/call_button.dart';
 import '../../widgets/decorative_leaves.dart';
 import '../../widgets/wp_common.dart';
 
@@ -157,7 +158,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Widget _header(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(6, 6, 20, 6),
+      padding: const EdgeInsets.fromLTRB(6, 6, 8, 6),
       child: Row(
         children: [
           IconButton(
@@ -174,6 +175,8 @@ class _ChatScreenState extends State<ChatScreen> {
             child: Text(widget.otherName.isEmpty ? '—' : widget.otherName,
                 style: TextStyle(fontSize: 15.5, fontWeight: FontWeight.w800, color: AppColors.heading)),
           ),
+          // Opens the native dialer with the other participant's number.
+          CallButton(otherUid: widget.otherUid),
         ],
       ),
     );

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart' show AutofillHints, TextInput;
 import '../core/theme.dart';
+import '../core/validators.dart';
 import '../services/auth_service.dart';
 import '../widgets/gradient_pill_button.dart';
 import '../widgets/phone_field.dart';
@@ -18,18 +19,17 @@ import 'login_screen.dart';
 import 'otp_verification_screen.dart';
 
 /// Inscription, formulaire affiché DÈS L'ARRIVÉE sur la page (demande
-/// explicite) — 3 étapes pour un Collecteur, 2 pour un Fournisseur de
-/// déchets, à qui l'adresse n'est plus demandée (chaque post a sa propre
-/// adresse, GPS ou tapée) :
+/// explicite), en 2 étapes pour les deux rôles — l'adresse n'est plus
+/// demandée (chaque post a sa propre adresse ; le Collecteur définit ses
+/// zones de collecte juste après) :
 /// 0. Identité — prénom, nom, email, mot de passe.
-/// 1. Adresse (Collecteur uniquement).
-/// 2. Téléphone + acceptation des conditions, puis :
+/// 1. Téléphone + acceptation des conditions, puis :
 ///    - code OTP pour confirmer le numéro (**simulé**, voir
 ///      OtpVerificationScreen) ;
-///    - création du compte Firebase (email/mot de passe), qui envoie l'email
-///      de vérification ;
-///    - attente du clic sur ce lien (EmailVerificationScreen, vraie
-///      vérification) avant de finaliser le rôle.
+///    - création du compte Firebase (email/mot de passe) ;
+///    - Fournisseur uniquement : envoi de l'email de vérification et attente
+///      du clic sur ce lien (EmailVerificationScreen, vraie vérification).
+///      Le Collecteur passe directement à la configuration de ses zones.
 ///
 /// Le rôle (Fournisseur de déchets / Collecteur) est choisi via deux LIENS
 /// côte à côte au-dessus du formulaire (voir [_roleLinks]) — jamais des
@@ -52,32 +52,27 @@ class RegisterScreen extends StatefulWidget {
 }
 
 class _RegisterScreenState extends State<RegisterScreen> {
-  /// Index interne des étapes : 0 identité, 1 adresse, 2 téléphone. Le
-  /// Fournisseur de déchets saute l'étape 1.
+  /// Étapes : 0 identité, 1 téléphone.
   int _step = 0;
-
-  bool get _asksAddress => _role == UserRole.collector;
-  int get _totalSteps => _asksAddress ? 3 : 2;
-
-  /// Numéro d'étape affiché (1-based), sans compter l'étape sautée.
-  int get _displayStep => (!_asksAddress && _step == 2) ? 2 : _step + 1;
+  static const _totalSteps = 2;
 
   final _identityFormKey = GlobalKey<FormState>();
-  final _addressFormKey = GlobalKey<FormState>();
 
   final _firstNameCtrl = TextEditingController();
   final _lastNameCtrl = TextEditingController();
   final _emailCtrl = TextEditingController();
   final _passwordCtrl = TextEditingController();
   final _confirmPasswordCtrl = TextEditingController();
-  final _addressCtrl = TextEditingController();
   final _phoneCtrl = TextEditingController();
+  final _companyCtrl = TextEditingController();
 
   bool _obscurePw = true;
   bool _obscureConfirmPw = true;
   bool _acceptTerms = false;
 
-  final _authService = AuthService();
+  // Créé au premier usage (création du compte), pas à l'affichage du
+  // formulaire : le formulaire peut ainsi être testé sans Firebase.
+  late final _authService = AuthService();
 
   String _fullPhoneNumber = '';
   bool _isCreatingAccount = false;
@@ -105,8 +100,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
     _emailCtrl.dispose();
     _passwordCtrl.dispose();
     _confirmPasswordCtrl.dispose();
-    _addressCtrl.dispose();
     _phoneCtrl.dispose();
+    _companyCtrl.dispose();
     super.dispose();
   }
 
@@ -124,10 +119,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
             : "Passwords do not match");
         return;
       }
-      setState(() => _step = _asksAddress ? 1 : 2);
-    } else if (_step == 1) {
-      if (!_addressFormKey.currentState!.validate()) return;
-      setState(() => _step = 2);
+      setState(() => _step = 1);
     }
   }
 
@@ -135,7 +127,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     if (_step == 0) {
       Navigator.of(context).pop();
     } else {
-      setState(() => _step = (_step == 2 && !_asksAddress) ? 0 : _step - 1);
+      setState(() => _step -= 1);
     }
   }
 
@@ -145,11 +137,15 @@ class _RegisterScreenState extends State<RegisterScreen> {
       _showSnack(s.acceptTerms);
       return;
     }
-    // Indicatif + au moins 6 chiffres : sinon, rien à vérifier par OTP.
-    if (_phoneCtrl.text.replaceAll(RegExp(r'\D'), '').length < 6) {
-      _showSnack(fr
-          ? "Entrez un numéro de téléphone valide."
-          : "Enter a valid phone number.");
+    final phoneError = Validators.phone(_fullPhoneNumber, fr: fr);
+    if (phoneError != null) {
+      _showSnack(phoneError);
+      return;
+    }
+    final companyError =
+        _role == UserRole.collector ? Validators.companyName(_companyCtrl.text, fr: fr) : null;
+    if (companyError != null) {
+      _showSnack(companyError);
       return;
     }
 
@@ -170,8 +166,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
         password: _passwordCtrl.text,
         firstName: _firstNameCtrl.text,
         lastName: _lastNameCtrl.text,
-        address: _asksAddress ? _addressCtrl.text : '',
+        address: '',
         phoneNumber: phone,
+        role: _role,
+        // Réservé au Collecteur.
+        companyName: _role == UserRole.collector ? _companyCtrl.text : null,
         phoneVerified: true,
         french: fr,
       );
@@ -194,17 +193,21 @@ class _RegisterScreenState extends State<RegisterScreen> {
     if (!mounted) return;
     setState(() => _isCreatingAccount = false);
 
-    // Pas d'accès à la suite tant que l'email n'est pas vérifié. Si
-    // l'utilisateur se déconnecte depuis cet écran, il est renvoyé à la
-    // connexion et cette page disparaît (`verified` reste `null`).
-    final verified = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(
-        builder: (_) => EmailVerificationScreen(
-          onVerified: (ctx) => Navigator.of(ctx).pop(true),
+    // Fournisseur : pas d'accès à la suite tant que l'email n'est pas
+    // vérifié. Si l'utilisateur se déconnecte depuis cet écran, il est
+    // renvoyé à la connexion et cette page disparaît (`verified` reste
+    // `null`). Collecteur : pas de vérification d'email (demande explicite),
+    // il passe directement à la configuration de ses zones.
+    if (_role == UserRole.household) {
+      final verified = await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (_) => EmailVerificationScreen(
+            onVerified: (ctx) => Navigator.of(ctx).pop(true),
+          ),
         ),
-      ),
-    );
-    if (verified != true || !mounted) return;
+      );
+      if (verified != true || !mounted) return;
+    }
     try {
       await _proceedAfterAccountCreation(credential);
     } catch (_) {
@@ -220,7 +223,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
     switch (_role) {
       case UserRole.household:
-        await _authService.completeHouseholdRegistration(uid);
+        // Rôle déjà enregistré à la création du compte (voir registerAccount).
         if (!mounted) return;
         Navigator.of(context).pushAndRemoveUntil(
           MaterialPageRoute(builder: (_) => const HomeScreen()),
@@ -290,9 +293,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
                           ),
                           const SizedBox(height: 6),
                           _StepIndicator(
-                              step: _displayStep - 1,
+                              step: _step,
                               total: _totalSteps,
-                              label: s.stepOf(_displayStep, _totalSteps)),
+                              label: s.stepOf(_step + 1, _totalSteps)),
                           const SizedBox(height: 14),
                           Text(s.registerTitle,
                               style: TextStyle(
@@ -332,13 +335,30 @@ class _RegisterScreenState extends State<RegisterScreen> {
                                     child: child,
                                   ),
                                 ),
+                                // Changement d'étape : fondu enchaîné entre deux
+                                // étapes (formulaires différents). Changement de
+                                // rôle sur la même étape : le formulaire est
+                                // remplacé d'un coup puis réapparaît en fondu —
+                                // jamais deux copies du même formulaire à la
+                                // fois (elles partageraient la même GlobalKey,
+                                // ce que Flutter interdit).
                                 child: KeyedSubtree(
-                                  key: ValueKey('$_step-$_role'),
-                                  child: switch (_step) {
-                                    0 => _identityStep(s),
-                                    1 => _addressStep(s),
-                                    _ => _phoneStep(s),
-                                  },
+                                  key: ValueKey(_step),
+                                  child: TweenAnimationBuilder<double>(
+                                    key: ValueKey(_role),
+                                    tween: Tween(begin: 0, end: 1),
+                                    duration: const Duration(milliseconds: 220),
+                                    curve: Curves.easeOut,
+                                    builder: (context, t, child) => Opacity(
+                                      opacity: t,
+                                      child: Transform.translate(
+                                          offset: Offset(0, 12 * (1 - t)), child: child),
+                                    ),
+                                    child: switch (_step) {
+                                      0 => _identityStep(s),
+                                      _ => _phoneStep(s),
+                                    },
+                                  ),
                                 ),
                               ),
                             ),
@@ -353,8 +373,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
                                 )
                               : GradientPillButton(
                                   label:
-                                      _step == 2 ? s.createMyAccount : s.next,
-                                  onPressed: _step == 2
+                                      _step == 1 ? s.createMyAccount : s.next,
+                                  onPressed: _step == 1
                                       ? () => _createAccount(s)
                                       : () => _goNext(lang),
                                   // Vert moins pastel que le reste de
@@ -419,11 +439,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   Widget _roleLink(UserRole role, AppStrings s) {
     final active = _role == role;
     return GestureDetector(
-      onTap: () => setState(() {
-        _role = role;
-        // Passage au Fournisseur pendant l'étape adresse : elle disparaît.
-        if (!_asksAddress && _step == 1) _step = 2;
-      }),
+      onTap: () => setState(() => _role = role),
       behavior: HitTestBehavior.opaque,
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -460,42 +476,24 @@ class _RegisterScreenState extends State<RegisterScreen> {
               children: [
                 Expanded(
                     child: _field(
-                        _firstNameCtrl, s.firstName, Icons.person_outline, s)),
+                        _firstNameCtrl, s.firstName, Icons.person_outline, s,
+                        validator: (v) => Validators.personName(v, fr: s.lang == AppLanguage.fr))),
                 const SizedBox(width: 12),
                 Expanded(
                     child: _field(
-                        _lastNameCtrl, s.lastName, Icons.person_outline, s)),
+                        _lastNameCtrl, s.lastName, Icons.person_outline, s,
+                        validator: (v) => Validators.personName(v, fr: s.lang == AppLanguage.fr))),
               ],
             ),
             const SizedBox(height: 14),
             _field(_emailCtrl, s.email, Icons.email_outlined, s,
+                validator: (v) => Validators.email(v, fr: s.lang == AppLanguage.fr),
                 keyboardType: TextInputType.emailAddress,
                 autofillHints: const [AutofillHints.email]),
             const SizedBox(height: 14),
             _passwordFields(s),
           ],
         ),
-      ),
-    );
-  }
-
-  Widget _addressStep(AppStrings s) {
-    return Form(
-      key: _addressFormKey,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(s.addressStepTitle,
-              style: TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w800,
-                  color: AppColors.mainText)),
-          const SizedBox(height: 4),
-          Text(s.addressStepSubtitle,
-              style: TextStyle(fontSize: 12, color: AppColors.textGray)),
-          const SizedBox(height: 16),
-          _field(_addressCtrl, s.address, Icons.home_outlined, s),
-        ],
       ),
     );
   }
@@ -517,6 +515,20 @@ class _RegisterScreenState extends State<RegisterScreen> {
           controller: _phoneCtrl,
           onChanged: (full) => _fullPhoneNumber = full,
         ),
+        // Entreprise : facultative, réservée au Collecteur.
+        if (_role == UserRole.collector) ...[
+          const SizedBox(height: 14),
+          TextFormField(
+            controller: _companyCtrl,
+            textCapitalization: TextCapitalization.words,
+            maxLength: 60,
+            decoration: InputDecoration(
+              labelText: s.companyNameOptional,
+              prefixIcon: const Icon(Icons.apartment_outlined, size: 19),
+              counterText: '',
+            ),
+          ),
+        ],
         const SizedBox(height: 18),
         Row(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -544,14 +556,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   Widget _field(
       TextEditingController c, String label, IconData icon, AppStrings s,
-      {TextInputType? keyboardType, List<String>? autofillHints}) {
+      {TextInputType? keyboardType, List<String>? autofillHints, String? Function(String?)? validator}) {
     return TextFormField(
       controller: c,
       keyboardType: keyboardType,
       autofillHints: autofillHints,
       decoration:
           InputDecoration(labelText: label, prefixIcon: Icon(icon, size: 19)),
-      validator: (v) => (v == null || v.isEmpty) ? s.requiredField : null,
+      validator: validator ?? (v) => (v == null || v.isEmpty) ? s.requiredField : null,
     );
   }
 
@@ -574,6 +586,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
           ),
           validator: (v) {
             if (v == null || v.length < 8) return s.passwordTooShort;
+            if (v.length > 64) return s.lang == AppLanguage.fr ? "64 caractères maximum" : "64 characters maximum";
             if (!RegExp(r'\d').hasMatch(v)) return s.passwordNeedsDigit;
             return null;
           },

@@ -56,7 +56,9 @@ class ModernBottomNav extends StatelessWidget {
       if (centerAction != null && i == half) {
         children.add(const SizedBox(width: 72));
       }
-      children.add(Expanded(child: _NavItemView(
+      // Onglet actif deux fois plus large : son libellé y tient sans
+      // réduire l'icône, quelle que soit la langue (voir [_NavItemView]).
+      children.add(Expanded(flex: i == currentIndex ? 2 : 1, child: _NavItemView(
         item: items[i],
         active: i == currentIndex,
         onTap: () => onTap(i),
@@ -140,9 +142,8 @@ class _NavItemView extends StatelessWidget {
         // comportement "s'étend pour remplir l'espace disponible" dès que
         // les contraintes entrantes sont bornées (même très grandes) — voir
         // la hauteur fixe posée dans [ModernBottomNav.build]. Le centrage
-        // horizontal/vertical du contenu est déjà assuré par le
-        // [FittedBox] ci-dessous (alignment centré par défaut).
-        padding: EdgeInsets.symmetric(horizontal: active ? 16 : 13, vertical: 12),
+        // du contenu est assuré par la [Row] ci-dessous.
+        padding: EdgeInsets.symmetric(horizontal: active ? 10 : 6, vertical: 12),
         decoration: BoxDecoration(
           // Pilule vitrée elle-même (demande explicite : "le container de
           // ces éléments doit avoir un effet plus glass") — un dégradé
@@ -165,73 +166,79 @@ class _NavItemView extends StatelessWidget {
               : null,
           borderRadius: BorderRadius.circular(999),
         ),
-        child: FittedBox(
-          // FittedBox : garde-fou anti-débordement — quel que soit le
-          // libellé (ex. "Portefeuille"/"Wallet", plus long que
-          // "Accueil"/"Home") ou la largeur réellement allouée par onglet,
-          // le contenu se réduit plutôt que déborder.
-          fit: BoxFit.scaleDown,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  // Icône active en dégradé de marque (plus "riche"/coloré
-                  // qu'un simple aplat — demande explicite : "les logos...
-                  // doivent être plus beaux") plutôt qu'un vert uni.
-                  if (active)
-                    ShaderMask(
-                      shaderCallback: (rect) =>
-                          AppColors.buttonGradient.createShader(rect),
-                      child: Icon(item.activeIcon, size: 28, color: Colors.white),
-                    )
-                  else
-                    Icon(item.icon, size: 26, color: iconColor),
-                  if (item.badge != null)
-                    StreamBuilder<int>(
-                      stream: item.badge,
-                      builder: (context, snap) {
-                        final count = snap.data ?? 0;
-                        if (count == 0) return const SizedBox.shrink();
-                        return Positioned(
-                          right: -7,
-                          top: -5,
-                          child: Container(
-                            padding: const EdgeInsets.all(4),
-                            decoration: const BoxDecoration(
-                                color: Colors.redAccent, shape: BoxShape.circle),
-                            child: Text(count > 9 ? '9+' : '$count',
-                                style: const TextStyle(
-                                    fontSize: 9,
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold)),
-                          ),
-                        );
-                      },
-                    ),
-                ],
-              ),
-              // Le libellé n'apparaît que sur l'onglet actif — pas
-              // d'AnimatedSize ici (incompatible avec le calcul de layout
-              // "dry" que Scaffold utilise pour dimensionner
-              // bottomNavigationBar : ça faisait occuper toute la hauteur de
-              // l'écran à la barre, écrasant le contenu de la page en dessous).
-              if (active) ...[
-                const SizedBox(width: 7),
-                Text(item.label,
-                    style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w900,
-                        color: labelColor,
-                        shadows: [
-                          Shadow(
-                              color: Colors.white.withOpacity(0.6),
-                              blurRadius: 2),
-                        ])),
+        // Icônes à taille FIXE et pilule qui remplit toute la largeur de
+        // l'onglet (demande explicite : "exactement le même rendu" en
+        // anglais et en français) — avant, un FittedBox réduisait TOUT
+        // l'onglet selon la longueur du libellé ("Portefeuille" vs
+        // "Wallet"), donc la taille des icônes changeait avec la langue.
+        // Seul le libellé se réduit désormais s'il manque de place.
+        child: Row(
+          mainAxisSize: active ? MainAxisSize.max : MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                // Icône active en dégradé de marque (plus "riche"/coloré
+                // qu'un simple aplat — demande explicite : "les logos...
+                // doivent être plus beaux") plutôt qu'un vert uni.
+                if (active)
+                  ShaderMask(
+                    shaderCallback: (rect) =>
+                        AppColors.buttonGradient.createShader(rect),
+                    child: Icon(item.activeIcon, size: 26, color: Colors.white),
+                  )
+                else
+                  Icon(item.icon, size: 26, color: iconColor),
+                if (item.badge != null)
+                  StreamBuilder<int>(
+                    stream: item.badge,
+                    builder: (context, snap) {
+                      final count = snap.data ?? 0;
+                      if (count == 0) return const SizedBox.shrink();
+                      return Positioned(
+                        right: -7,
+                        top: -5,
+                        child: Container(
+                          padding: const EdgeInsets.all(4),
+                          decoration: const BoxDecoration(
+                              color: Colors.redAccent, shape: BoxShape.circle),
+                          child: Text(count > 9 ? '9+' : '$count',
+                              style: const TextStyle(
+                                  fontSize: 9,
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold)),
+                        ),
+                      );
+                    },
+                  ),
               ],
+            ),
+            // Le libellé n'apparaît que sur l'onglet actif — pas
+            // d'AnimatedSize ici (incompatible avec le calcul de layout
+            // "dry" que Scaffold utilise pour dimensionner
+            // bottomNavigationBar : ça faisait occuper toute la hauteur de
+            // l'écran à la barre, écrasant le contenu de la page en dessous).
+            if (active) ...[
+              const SizedBox(width: 6),
+              Flexible(
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(item.label,
+                      maxLines: 1,
+                      style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w900,
+                          color: labelColor,
+                          shadows: [
+                            Shadow(
+                                color: Colors.white.withOpacity(0.6),
+                                blurRadius: 2),
+                          ])),
+                ),
+              ),
             ],
-          ),
+          ],
         ),
       ),
     );

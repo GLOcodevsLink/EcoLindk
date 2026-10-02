@@ -3,19 +3,21 @@ import 'package:flutter/material.dart';
 import '../core/phone_country.dart';
 import '../core/theme.dart';
 import '../models/collection_zone.dart';
-import '../models/user_role.dart';
 import '../services/auth_service.dart';
 import '../services/collector_zone_service.dart';
 import '../widgets/collection_zones_editor.dart';
 import '../widgets/gradient_pill_button.dart';
 import '../widgets/decorative_leaves.dart';
+import '../widgets/language_switcher.dart';
 import '../core/l10n/app_language.dart';
 import '../core/l10n/strings.dart';
 import 'home_screen.dart';
+import 'login_screen.dart';
 
 /// Dernière étape pour un Collecteur : zones de collecte (1 à 5, choisies
-/// dans OpenStreetMap, pays prérempli depuis l'indicatif du téléphone) +
-/// statut (indépendant ou en entreprise). Finalise le compte (voir
+/// dans OpenStreetMap, pays prérempli depuis l'indicatif du téléphone).
+/// Plus de question "indépendant ou en entreprise" (demande explicite :
+/// champs retirés). Finalise le compte (voir
 /// AuthService.completeCollectorRegistration), enregistre les zones (voir
 /// CollectorZoneService — elles servent au ciblage des notifications de
 /// nouveaux posts) puis ouvre le dashboard.
@@ -31,10 +33,8 @@ class CollectorSetupScreen extends StatefulWidget {
 
 class _CollectorSetupScreenState extends State<CollectorSetupScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _companyNameCtrl = TextEditingController();
   List<CollectionZone> _zones = const [];
   Country? _phoneCountry;
-  WorkStatus _workStatus = WorkStatus.independent;
   bool _isLoading = false;
 
   final _authService = AuthService();
@@ -49,10 +49,21 @@ class _CollectorSetupScreenState extends State<CollectorSetupScreen> {
     }).catchError((_) {});
   }
 
-  @override
-  void dispose() {
-    _companyNameCtrl.dispose();
-    super.dispose();
+  /// Retour arrière toujours possible, même sans zone (demande explicite :
+  /// "il doit quand même pouvoir rentrer en arrière", ex. pour changer la
+  /// langue). Le compte est déjà créé : on se déconnecte et on revient à la
+  /// connexion — à la prochaine connexion, HomeScreen rouvre cet écran
+  /// (voir `intendedRole`) pour terminer la configuration.
+  Future<void> _leave() async {
+    if (_isLoading) return;
+    try {
+      await _authService.signOut();
+    } catch (_) {}
+    if (!mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const LoginScreen()),
+      (route) => false,
+    );
   }
 
   Future<void> _finish(AppStrings s) async {
@@ -66,11 +77,7 @@ class _CollectorSetupScreenState extends State<CollectorSetupScreen> {
     }
     setState(() => _isLoading = true);
     try {
-      await _authService.completeCollectorRegistration(
-        widget.uid,
-        workStatus: _workStatus,
-        companyName: _companyNameCtrl.text,
-      );
+      await _authService.completeCollectorRegistration(widget.uid);
       await _zoneService.save(widget.uid, _zones);
       if (!mounted) return;
       Navigator.of(context).pushAndRemoveUntil(
@@ -97,6 +104,10 @@ class _CollectorSetupScreenState extends State<CollectorSetupScreen> {
             final s = AppStrings.of(lang);
             return PopScope(
               canPop: false,
+              // Bouton retour du système : même sortie que la flèche.
+              onPopInvokedWithResult: (didPop, _) {
+                if (!didPop) _leave();
+              },
               child: Scaffold(
                 body: Stack(
                   children: [
@@ -108,7 +119,22 @@ class _CollectorSetupScreenState extends State<CollectorSetupScreen> {
                           key: _formKey,
                           child: ListView(
                             children: [
-                              const SizedBox(height: 12),
+                              const SizedBox(height: 4),
+                              Row(
+                                children: [
+                                  IconButton(
+                                    onPressed: _isLoading ? null : _leave,
+                                    padding: EdgeInsets.zero,
+                                    alignment: Alignment.centerLeft,
+                                    icon: Icon(Icons.arrow_back,
+                                        color: AppColors.heading),
+                                  ),
+                                  const Spacer(),
+                                  LanguageSwitcher(
+                                      iconColor: AppColors.heading),
+                                ],
+                              ),
+                              const SizedBox(height: 4),
                               Text(s.collectorSetupTitle,
                                   style: TextStyle(
                                       fontSize: 22,
@@ -133,47 +159,6 @@ class _CollectorSetupScreenState extends State<CollectorSetupScreen> {
                                 },
                               ),
                               const SizedBox(height: 18),
-                              Text(s.workStatusQuestion,
-                                  style: TextStyle(
-                                      fontSize: 12.5,
-                                      fontWeight: FontWeight.w700,
-                                      color: AppColors.mainText)),
-                              const SizedBox(height: 8),
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: _choiceChip(
-                                      s.workStatusIndependent,
-                                      _workStatus == WorkStatus.independent,
-                                      () => setState(() =>
-                                          _workStatus = WorkStatus.independent),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: _choiceChip(
-                                      s.workStatusCompany,
-                                      _workStatus == WorkStatus.company,
-                                      () => setState(() =>
-                                          _workStatus = WorkStatus.company),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              if (_workStatus == WorkStatus.company) ...[
-                                const SizedBox(height: 14),
-                                TextFormField(
-                                  controller: _companyNameCtrl,
-                                  decoration: InputDecoration(
-                                    labelText: s.companyNameOptional,
-                                    hintText: s.companyNameHint,
-                                    prefixIcon: const Icon(
-                                        Icons.apartment_outlined,
-                                        size: 19),
-                                  ),
-                                ),
-                              ],
-                              const SizedBox(height: 18),
                               _infoBanner(s.collectorPendingNote),
                               const SizedBox(height: 22),
                               _isLoading
@@ -197,32 +182,6 @@ class _CollectorSetupScreenState extends State<CollectorSetupScreen> {
           },
         );
       },
-    );
-  }
-
-  Widget _choiceChip(String label, bool active, VoidCallback onTap) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 11, horizontal: 8),
-        decoration: BoxDecoration(
-          color: active
-              ? AppColors.greenMid.withOpacity(0.12)
-              : AppColors.inputFill,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-              color: active ? AppColors.greenMid : AppColors.line, width: 1.4),
-        ),
-        child: Text(
-          label,
-          textAlign: TextAlign.center,
-          style: TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.w700,
-            color: active ? AppColors.heading : AppColors.textGray,
-          ),
-        ),
-      ),
     );
   }
 

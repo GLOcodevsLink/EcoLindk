@@ -85,14 +85,22 @@ class CollectionService {
     required double latitude,
     required double longitude,
     required bool locationIsApproximate,
+    String? neighborhood,
+    String? city,
   }) async {
-    // Quartier/ville du post (géocodage inverse OSM) : affichés dans la
-    // notification et comparés aux zones des collecteurs. Jamais bloquant.
+    // Quartier/ville du post : ceux choisis par le Fournisseur s'il les a
+    // sélectionnés dans la liste, sinon déduits des coordonnées GPS
+    // (géocodage inverse OSM). Affichés dans la notification et comparés
+    // aux zones des collecteurs. Jamais bloquant.
     ReverseGeocodeResult? place;
-    try {
-      place = await _geocoding.reverse(latitude, longitude).timeout(const Duration(seconds: 8));
-    } catch (_) {
-      place = null;
+    if (neighborhood != null && neighborhood.trim().isNotEmpty) {
+      place = ReverseGeocodeResult(neighborhood: neighborhood, city: city);
+    } else {
+      try {
+        place = await _geocoding.reverse(latitude, longitude).timeout(const Duration(seconds: 8));
+      } catch (_) {
+        place = null;
+      }
     }
 
     final draft = CollectionRequest(

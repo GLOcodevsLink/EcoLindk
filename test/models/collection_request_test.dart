@@ -5,24 +5,24 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   // FieldValue.serverTimestamp() doit être créé APRÈS l'installation de la
-  // fausse plateforme Firestore, sinon fake_cloud_firestore ne le reconnaît pas.
+  // plateforme Firestore de test, sinon il n'est pas reconnu.
   setUpAll(FakeFirebaseFirestore.new);
 
   group('weightBoundsKg', () {
-    test('anciens paliers reconnus tels quels', () async {
+    test('legacy ranges are recognized as-is', () async {
       expect('< 1 kg'.weightBoundsKg, (0, 1));
       expect('1 - 5 kg'.weightBoundsKg, (1, 5));
       expect('5 - 10 kg'.weightBoundsKg, (5, 10));
       expect('10+ kg'.weightBoundsKg, (10, double.infinity));
     });
 
-    test('quantité libre : tolérance de ±5 kg', () async {
+    test('free quantity: ±5 kg tolerance', () async {
       final (min, max) = '15 kg'.weightBoundsKg;
       expect(min, closeTo(10, 1e-9));
       expect(max, closeTo(20, 1e-9));
     });
 
-    test('accepte la virgule décimale, borne basse jamais négative', () async {
+    test('accepts a decimal comma, lower bound never negative', () async {
       final (min, max) = '2,5 kg'.weightBoundsKg;
       expect(min, 0);
       expect(max, closeTo(7.5, 1e-9));
@@ -30,7 +30,7 @@ void main() {
   });
 
   group('acceptsCollectedWeight', () {
-    test('écart de plus de 5 kg refusé, 5 kg pile accepté', () async {
+    test('rejects a gap over 5 kg, accepts exactly 5 kg', () async {
       expect('15 kg'.acceptsCollectedWeight(15), isTrue);
       expect('15 kg'.acceptsCollectedWeight(20), isTrue);
       expect('15 kg'.acceptsCollectedWeight(10), isTrue);
@@ -41,17 +41,17 @@ void main() {
       expect('15 kg'.acceptsCollectedWeight(40), isFalse);
     });
 
-    test('poids nul ou négatif refusé', () async {
+    test('rejects zero or negative weight', () async {
       expect('3 kg'.acceptsCollectedWeight(0), isFalse);
       expect('3 kg'.acceptsCollectedWeight(-1), isFalse);
     });
 
-    test('anciens paliers : bornes inclusives', () async {
+    test('legacy ranges: inclusive bounds', () async {
       expect('1 - 5 kg'.acceptsCollectedWeight(5), isTrue);
       expect('1 - 5 kg'.acceptsCollectedWeight(6), isFalse);
     });
 
-    test('texte illisible ou zéro : aucune borne', () async {
+    test('unreadable text or zero: no bounds', () async {
       expect('beaucoup'.weightBoundsKg, (0, double.infinity));
       expect('0 kg'.weightBoundsKg, (0, double.infinity));
       expect(''.weightBoundsKg, (0, double.infinity));
@@ -59,7 +59,7 @@ void main() {
   });
 
   group('enums', () {
-    test('fromName retombe sur une valeur par défaut', () async {
+    test('fromName falls back to a default value', () async {
       expect(WasteCategoryX.fromName('glass'), WasteCategory.glass);
       expect(WasteCategoryX.fromName('inconnu'), WasteCategory.plastic);
       expect(WasteCategoryX.fromName(null), WasteCategory.plastic);
@@ -67,7 +67,7 @@ void main() {
       expect(RequestStatusX.fromName(null), RequestStatus.pending);
     });
 
-    test('libellés FR/EN non vides', () async {
+    test('FR/EN labels are not empty', () async {
       for (final c in WasteCategory.values) {
         expect(c.label(true), isNotEmpty);
         expect(c.label(false), isNotEmpty);
@@ -99,12 +99,12 @@ void main() {
           createdAt: DateTime(2026),
         );
 
-    test('reference : 6 premiers caractères en majuscules', () async {
+    test('reference: first 6 characters in uppercase', () async {
       expect(build('abcdef123').reference, 'ECL-ABCDEF');
       expect(build('ab').reference, 'ECL-AB');
     });
 
-    test('toCreateMap force le statut pending sans collecteur', () async {
+    test('toCreateMap forces pending status with no collector', () async {
       final map = build('x').toCreateMap();
       expect(map['status'], 'pending');
       expect(map['collectorUid'], isNull);
@@ -113,7 +113,7 @@ void main() {
       expect(map['createdAt'], isA<FieldValue>());
     });
 
-    test('aller-retour Firestore via fromDoc', () async {
+    test('Firestore round trip via fromDoc', () async {
       final db = FakeFirebaseFirestore();
       final ref = await db.collection('collectionRequests').add(build('').toCreateMap());
       final r = CollectionRequest.fromDoc(await ref.get());
@@ -127,7 +127,7 @@ void main() {
       expect(r.collectorUid, isNull);
     });
 
-    test('fromDoc tolère un document incomplet', () async {
+    test('fromDoc tolerates an incomplete document', () async {
       final db = FakeFirebaseFirestore();
       await db.collection('c').doc('d').set({'latitude': 3});
       final r = CollectionRequest.fromDoc(await db.collection('c').doc('d').get());

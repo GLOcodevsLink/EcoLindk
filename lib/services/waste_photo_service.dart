@@ -85,6 +85,13 @@ class WastePhotoService {
     return '$refPrefix${doc.id}';
   }
 
+  /// Compresse une photo de profil (carré de [avatarSize] px, voir
+  /// [compressAvatar]) puis l'enregistre ; renvoie sa référence, à mettre
+  /// dans `users/{uid}.photoUrl`. Même collection que les photos de déchets
+  /// (mêmes règles : chacun n'enregistre que les siennes).
+  Future<String> uploadAvatar(String uid, Uint8List original) async =>
+      uploadCompressed(uid, await compute(compressAvatar, original));
+
   /// Octets JPEG de la photo référencée par [ref], `null` si introuvable.
   Future<Uint8List?> load(String ref) async {
     final id = ref.substring(refPrefix.length);
@@ -95,6 +102,30 @@ class WastePhotoService {
     if (data is! Blob) return null;
     return _cache[id] = data.bytes;
   }
+}
+
+/// Côté (px) d'une photo de profil.
+const avatarSize = 512;
+
+/// Photo de profil : recadrée au centre en carré, réduite à [avatarSize] px
+/// de côté, réencodée en JPEG (quelques dizaines de Ko). Fonction de premier
+/// niveau pour pouvoir tourner dans un isolat (`compute`).
+Uint8List compressAvatar(Uint8List input) {
+  img.Image? decoded;
+  try {
+    decoded = img.decodeImage(input);
+  } catch (_) {
+    decoded = null;
+  }
+  if (decoded == null) throw const WastePhotoException('invalid-image');
+  final oriented = img.bakeOrientation(decoded);
+  final side = math.min(oriented.width, oriented.height);
+  final square = img.copyCrop(oriented,
+      x: (oriented.width - side) ~/ 2, y: (oriented.height - side) ~/ 2, width: side, height: side);
+  final resized = side <= avatarSize
+      ? square
+      : img.copyResize(square, width: avatarSize, height: avatarSize, interpolation: img.Interpolation.average);
+  return Uint8List.fromList(img.encodeJpg(resized, quality: 85));
 }
 
 /// Réduit la photo (côté le plus long : 1280 px, puis moins si besoin) et

@@ -369,6 +369,10 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
         'not-configured' => fr
             ? "Assistant IA indisponible : Firebase AI Logic n'est pas encore activé pour ce projet."
             : "AI assistant unavailable: Firebase AI Logic isn't enabled for this project yet.",
+        // Ex. accès à Gemini refusé par Google pour ce projet.
+        'http-error' => fr
+            ? "Le service d'IA est momentanément indisponible. Réessayez plus tard."
+            : "The AI service is temporarily unavailable. Try again later.",
         'rate-limited' => fr
             ? "Trop de questions d'affilée. Réessayez dans une minute."
             : "Too many questions in a row. Try again in a minute.",

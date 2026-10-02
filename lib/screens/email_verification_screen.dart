@@ -8,12 +8,16 @@ import '../services/auth_service.dart';
 import '../widgets/decorative_leaves.dart';
 import '../widgets/gradient_pill_button.dart';
 import 'login_screen.dart';
+import 'register_screen.dart';
 
 /// Vérification de l'adresse email — vraie, via le lien envoyé par Firebase
-/// Auth (voir AuthService.sendEmailVerification). Étape de l'INSCRIPTION
-/// uniquement (voir RegisterScreen), jamais de la connexion : tant que le
-/// lien n'a pas été ouvert, on ne peut que renvoyer l'email ou se
-/// déconnecter.
+/// Auth (voir AuthService.sendEmailVerification). Affichée pendant
+/// l'inscription (voir RegisterScreen) puis à chaque ouverture de l'app
+/// tant que le lien n'a pas été cliqué (voir HomeScreen) — uniquement pour
+/// les comptes créés avec cette vérification, jamais pour les anciens.
+/// Tant que le lien n'a pas été ouvert, on ne peut que renvoyer l'email,
+/// revenir en arrière, se déconnecter ou recommencer l'inscription — jamais
+/// entrer dans l'app.
 /// L'état est revérifié toutes les quelques secondes : l'utilisateur n'a
 /// qu'à revenir dans l'app après avoir cliqué sur le lien.
 class EmailVerificationScreen extends StatefulWidget {
@@ -114,14 +118,80 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen>
     }
   }
 
+  /// "Mauvaise adresse ?" : annule l'inscription (compte, fiche et entrée
+  /// téléphone supprimés) et revient au formulaire, déjà rempli, pour
+  /// corriger l'email et recommencer.
+  Future<void> _restart() async {
+    final fr = _fr;
+    final sure = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.card,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text(fr ? "Recommencer l'inscription ?" : "Restart sign-up?"),
+        content: Text(fr
+            ? "Le compte en cours de création sera supprimé. Vous pourrez corriger votre adresse email."
+            : "The account being created will be deleted. You'll be able to fix your email address."),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: Text(fr ? "Annuler" : "Cancel")),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text(fr ? "Recommencer" : "Restart",
+                style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.w700)),
+          ),
+        ],
+      ),
+    );
+    if (sure != true || !mounted) return;
+    _poll?.cancel();
+    _done = true;
+    await _authService.abandonRegistration();
+    if (!mounted) return;
+    final nav = Navigator.of(context);
+    if (nav.canPop()) {
+      nav.pop(false); // retour au formulaire d'inscription, déjà rempli
+    } else {
+      nav.pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const RegisterScreen()),
+        (route) => false,
+      );
+    }
+  }
+
+  /// Quitte sans supprimer le compte : l'utilisateur pourra revenir plus
+  /// tard, cliquer sur le lien et se connecter.
   Future<void> _signOut() async {
     _poll?.cancel();
+    _done = true;
     await _authService.signOut();
     if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => const LoginScreen()),
       (route) => false,
     );
+  }
+
+  /// Retour (flèche ou bouton du système) sans avoir cliqué sur le lien :
+  /// l'utilisateur est déconnecté — le compte est conservé — puis revient à
+  /// l'écran précédent (formulaire d'inscription, déjà rempli) ou, s'il n'y
+  /// en a pas (écran affiché à l'ouverture de l'app), à la connexion. Il ne
+  /// peut donc pas accéder à l'app : à sa prochaine connexion, cet écran
+  /// réapparaîtra tant que le lien n'aura pas été ouvert.
+  Future<void> _goBack() async {
+    if (_done) return;
+    _poll?.cancel();
+    _done = true;
+    await _authService.signOut();
+    if (!mounted) return;
+    final nav = Navigator.of(context);
+    if (nav.canPop()) {
+      nav.pop(false);
+    } else {
+      nav.pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const LoginScreen()),
+        (route) => false,
+      );
+    }
   }
 
   @override
@@ -134,6 +204,10 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen>
         final wait = _resendWait;
         return PopScope(
           canPop: false,
+          // Bouton retour du système : même sortie que la flèche.
+          onPopInvokedWithResult: (didPop, _) {
+            if (!didPop) _goBack();
+          },
           child: Scaffold(
             body: Stack(
               children: [
@@ -142,7 +216,18 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen>
                   child: ListView(
                     padding: const EdgeInsets.symmetric(horizontal: 24),
                     children: [
-                      const SizedBox(height: 48),
+                      const SizedBox(height: 4),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: IconButton(
+                          onPressed: _done ? null : _goBack,
+                          padding: EdgeInsets.zero,
+                          alignment: Alignment.centerLeft,
+                          tooltip: fr ? "Retour" : "Back",
+                          icon: Icon(Icons.arrow_back, color: AppColors.heading),
+                        ),
+                      ),
+                      const SizedBox(height: 4),
                       Center(
                         child: Container(
                           width: 84,
@@ -201,10 +286,17 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen>
                       Center(
                         child: TextButton(
                           onPressed: _signOut,
+                          child: Text(fr ? "Se déconnecter" : "Sign out",
+                              style: TextStyle(fontWeight: FontWeight.w700, color: AppColors.textGray)),
+                        ),
+                      ),
+                      Center(
+                        child: TextButton(
+                          onPressed: _restart,
                           child: Text(
                               fr
-                                  ? "Mauvaise adresse ? Se déconnecter"
-                                  : "Wrong address? Sign out",
+                                  ? "Mauvaise adresse ? Recommencer l'inscription"
+                                  : "Wrong address? Restart sign-up",
                               style: TextStyle(
                                   fontWeight: FontWeight.w700, color: AppColors.textGray)),
                         ),

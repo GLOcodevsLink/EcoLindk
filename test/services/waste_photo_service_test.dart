@@ -21,7 +21,7 @@ Uint8List noisyPhoto({int width = 4000, int height = 3000}) {
 
 void main() {
   group('compressForFirestore', () {
-    test('une grosse photo passe sous la limite d\'un document Firestore', () {
+    test('a large photo fits under the Firestore document limit', () {
       final original = noisyPhoto();
       expect(original.length, greaterThan(WastePhotoService.maxBytes));
 
@@ -33,20 +33,20 @@ void main() {
       expect(decoded.width / decoded.height, closeTo(4 / 3, 0.01));
     });
 
-    test('une petite photo n\'est pas agrandie', () {
+    test('a small photo is not upscaled', () {
       final jpeg = compressForFirestore(noisyPhoto(width: 400, height: 300));
       final decoded = img.decodeJpg(jpeg)!;
       expect(decoded.width, 400);
       expect(decoded.height, 300);
     });
 
-    test('fichier qui n\'est pas une image → invalid-image', () {
+    test('a non-image file → invalid-image', () {
       expect(() => compressForFirestore(Uint8List.fromList([1, 2, 3, 4])),
           throwsA(isA<WastePhotoException>().having((e) => e.code, 'code', 'invalid-image')));
     });
   });
 
-  test('upload enregistre la photo dans Firestore et load la relit', () async {
+  test('upload stores the photo in Firestore and load reads it back', () async {
     final db = FakeFirebaseFirestore();
     final photos = WastePhotoService(firestore: db);
 
@@ -65,7 +65,7 @@ void main() {
     expect(WastePhotoService.isFirestoreRef('https://storage.example/a.jpg'), isFalse);
   });
 
-  test('photo compressée une fois, puis enregistrée sans recompression', () async {
+  test('photo compressed once, then stored without recompression', () async {
     final db = FakeFirebaseFirestore();
     final jpeg = await WastePhotoService.compress(noisyPhoto(width: 2048, height: 1536));
     expect(jpeg.length, lessThanOrEqualTo(WastePhotoService.maxBytes));
@@ -76,7 +76,7 @@ void main() {
     expect(doc['sizeBytes'], jpeg.length); // exactement les octets préparés
   });
 
-  test('photo déjà compressée mais trop lourde → too-large, rien d\'écrit', () async {
+  test('already compressed but too heavy → too-large, nothing written', () async {
     final db = FakeFirebaseFirestore();
     await expectLater(
       WastePhotoService(firestore: db).uploadCompressed('house', Uint8List(WastePhotoService.maxBytes + 1)),

@@ -204,9 +204,12 @@ class AppStrings {
       case 'invalid-email':
         return _fr ? "Adresse email invalide." : "Invalid email address.";
       case 'email-already-in-use':
+        // Une inscription inachevée est reprise automatiquement avec le bon
+        // mot de passe (voir AuthService.registerAccount) : ce message ne
+        // concerne donc qu'un compte complet, ou un mauvais mot de passe.
         return _fr
-            ? "Un compte existe déjà avec cet email."
-            : "An account already exists with this email.";
+            ? "Un compte existe déjà avec cet email. Connectez-vous, ou utilisez « Mot de passe oublié » si besoin."
+            : "An account already exists with this email. Log in, or use \"Forgot password\" if needed.";
       case 'weak-password':
         return _fr
             ? "Mot de passe trop faible (8 caractères minimum, avec au moins un chiffre)."

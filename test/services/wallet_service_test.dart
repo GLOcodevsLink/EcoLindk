@@ -13,8 +13,8 @@ void main() {
     wallet = WalletService(firestore: db);
   });
 
-  // Lecture directe (get) : le premier événement de `snapshots()` de
-  // fake_cloud_firestore peut être périmé juste après une transaction.
+  // Lecture directe (get) : le premier événement de `snapshots()` peut être
+  // périmé juste après une transaction.
   Future<int?> field(String uid, String name) async =>
       ((await db.doc('wallets/$uid').get()).data()?[name] as num?)?.toInt();
   Future<int?> balance(String uid) => field(uid, 'pointsBalance');
@@ -44,11 +44,11 @@ void main() {
         createdAt: DateTime(2026),
       );
 
-  test('solde à 0 pour un nouveau portefeuille', () async {
+  test('balance is 0 for a new wallet', () async {
     expect(await wallet.watchBalance('nouveau').first, 0);
   });
 
-  test('creditPoints augmente solde et total gagné, et journalise', () async {
+  test('creditPoints increases balance and lifetime total, and logs it', () async {
     await wallet.creditPoints(uid: 'u', points: 30, label: 'Bonus');
     await wallet.creditPoints(uid: 'u', points: 20, label: 'Bonus');
     expect(await balance('u'), 50);
@@ -57,7 +57,7 @@ void main() {
   });
 
   group('claimCollectionPoints', () {
-    test('crédite une fois, même appelé plusieurs fois', () async {
+    test('credits once, even when called several times', () async {
       await wallet.claimCollectionPoints(completed());
       await wallet.claimCollectionPoints(completed());
       expect(await balance('house'), 40);
@@ -65,22 +65,22 @@ void main() {
       expect(notifs.docs.single.data()['type'], 'pointsCredited');
     });
 
-    test('ignore une demande non terminée ou sans points', () async {
+    test('ignores an unfinished request or one without points', () async {
       await wallet.claimCollectionPoints(completed(status: RequestStatus.inProgress));
       await wallet.claimCollectionPoints(completed(points: null));
       expect(await balance('house'), isNull);
     });
   });
 
-  group('redeem (conversion simulée)', () {
-    test('débite le solde et enregistre la conversion', () async {
+  group('redeem (points conversion)', () {
+    test('debits the balance and records the conversion', () async {
       await wallet.creditPoints(uid: 'u', points: 30, label: 'Bonus');
       final r = await wallet.redeem(
           uid: 'u', method: RedemptionMethod.airtime, points: 15, recipientPhone: '+237650000000');
 
       expect(r.status, RedemptionStatus.completed);
       expect(await balance('u'), 15);
-      // Pas de vérification de `lifetimeEarned` ici : fake_cloud_firestore
+      // Pas de vérification de `lifetimeEarned` ici : la base de test
       // ignore SetOptions(merge: true) dans une transaction et efface donc ce
       // champ, alors que le vrai Firestore le conserve.
       expect(await txPoints('u'), unorderedEquals([30, -15]));
@@ -89,7 +89,7 @@ void main() {
       expect(redemption['status'], 'completed');
     });
 
-    test('refuse si le solde est insuffisant', () async {
+    test('rejects when the balance is insufficient', () async {
       await wallet.creditPoints(uid: 'u', points: 10, label: 'Bonus');
       await expectLater(
         wallet.redeem(

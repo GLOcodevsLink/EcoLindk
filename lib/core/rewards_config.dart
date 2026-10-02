@@ -16,7 +16,7 @@ class RewardsConfig {
   /// ([referenceMaterials], ligne marquée pour chaque catégorie), jamais un
   /// second barème : ce que l'utilisateur voit est exactement ce qui est
   /// crédité. Plastique = bouteilles plastique, papier/carton = carton,
-  /// verre = verre, métal = métal.
+  /// verre = verre, métal = métal, canettes = canettes de boisson.
   static Map<WasteCategory, double> get pointsPerKg => {
         for (final m in referenceMaterials)
           if (m.creditedCategory != null) m.creditedCategory!: m.pointsPerKg,
@@ -25,15 +25,15 @@ class RewardsConfig {
   /// Prix de référence (FCFA/kg) affiché sur la page "Liste des prix" —
   /// basés sur la grille tarifaire officielle publiée par ECOCOLLECT SARL
   /// pour Douala et Yaoundé (14 février 2026) : plastiques 75 FCFA/kg,
-  /// verre et papiers/cartons 50 FCFA/kg, aluminium/canettes 200 FCFA/kg
-  /// (la ferraille, elle, se négocie autour de 100 FCFA/kg — non distinguée
-  /// ici, notre catégorie "métal" couvrant les deux). Source :
+  /// verre et papiers/cartons 50 FCFA/kg, aluminium/canettes 200 FCFA/kg,
+  /// ferraille autour de 100 FCFA/kg (catégorie "métal"). Source :
   /// https://vitrineducameroun.com/2026/02/15/valorisation-des-dechets-une-grille-de-prix-pour-doper-la-pre-collecte/
   static const Map<WasteCategory, double> pricePerKgFcfa = {
     WasteCategory.plastic: 75,
     WasteCategory.paperCardboard: 50,
     WasteCategory.glass: 50,
-    WasteCategory.metal: 200,
+    WasteCategory.metal: 100,
+    WasteCategory.beverageCans: 200,
   };
 
   /// Commission prélevée sur le Collecteur, en FCFA par kg collecté et
@@ -45,6 +45,8 @@ class RewardsConfig {
     WasteCategory.paperCardboard: 5,
     WasteCategory.glass: 5,
     WasteCategory.metal: 20,
+    // Même tarif que le verre (demande explicite).
+    WasteCategory.beverageCans: 5,
   };
 
   /// Taux de conversion points -> FCFA : [conversionThresholdPoints] points
@@ -74,6 +76,8 @@ class RewardsConfig {
         creditedCategory: WasteCategory.metal),
     ReferenceMaterial("Verre", "Glass", Icons.wine_bar_outlined, 0.5,
         creditedCategory: WasteCategory.glass),
+    ReferenceMaterial("Canettes de boisson", "Beverage cans", Icons.sports_bar_outlined, 2,
+        creditedCategory: WasteCategory.beverageCans),
   ];
 
   /// Points offerts au parrain lorsque le filleul complète sa première

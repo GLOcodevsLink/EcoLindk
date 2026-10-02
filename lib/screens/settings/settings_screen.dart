@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import '../../widgets/user_avatar.dart';
 import '../../core/theme.dart';
 import '../../services/auth_service.dart';
 import '../../widgets/decorative_leaves.dart';
@@ -89,7 +90,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                     fontWeight: FontWeight.w800,
                                     color: AppColors.heading)),
                             const SizedBox(height: 18),
-                            _profileHeader(fullName, email),
+                            _profileHeader(fullName, email, data?['photoUrl'] as String?),
                             const SizedBox(height: 22),
                             if (isHousehold) ...[
                               _row(
@@ -175,7 +176,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Widget _profileHeader(String fullName, String email) {
+  Widget _profileHeader(String fullName, String email, String? photoUrl) {
     return InkWell(
       borderRadius: BorderRadius.circular(16),
       onTap: _openProfile,
@@ -188,19 +189,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
         child: Row(
           children: [
-            Container(
-              width: 56,
-              height: 56,
-              decoration: const BoxDecoration(
-                  gradient: AppColors.buttonGradient, shape: BoxShape.circle),
-              child: Center(
-                child: Text(_initials(fullName),
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 20,
-                        fontWeight: FontWeight.w800)),
-              ),
-            ),
+            UserAvatar(photoUrl: photoUrl, fullName: fullName, size: 56),
             const SizedBox(width: 14),
             Expanded(
               child: Column(
@@ -224,17 +213,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  String _initials(String fullName) {
-    final parts = fullName
-        .trim()
-        .split(RegExp(r'\s+'))
-        .where((p) => p.isNotEmpty)
-        .toList();
-    if (parts.isEmpty) return '?';
-    if (parts.length == 1) return parts.first.substring(0, 1).toUpperCase();
-    return (parts.first.substring(0, 1) + parts.last.substring(0, 1))
-        .toUpperCase();
-  }
+
 
   Widget _row({
     required IconData icon,

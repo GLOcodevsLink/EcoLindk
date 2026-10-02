@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
 import '../../core/l10n/app_language.dart';
-import '../../core/rewards_config.dart';
 import '../../core/theme.dart';
 import '../../models/collection_request.dart';
 import '../../services/auth_service.dart';
 import '../../services/collection_service.dart';
+import '../../services/commission_service.dart';
+import '../../services/payment_gateway.dart';
 import '../../widgets/decorative_leaves.dart';
+import '../../widgets/gradient_pill_button.dart';
 import '../../widgets/wp_common.dart';
+import 'commission_payment_sheet.dart';
 import 'subscription_screen.dart';
 
 /// Vue d'ensemble de la commission du Collecteur — demande explicite :
@@ -19,6 +22,10 @@ import 'subscription_screen.dart';
 /// RewardsConfig.commissionPerKgFcfa et la page "Tarifs de commission" des
 /// Réglages), figée sur la demande à la double confirmation — recalculée ici
 /// depuis le poids pour les collectes terminées avant ce changement.
+///
+/// "Reste à payer" = toutes les commissions − règlements réussis ; le
+/// Collecteur le règle par Mobile Money (voir CommissionPaymentSheet et
+/// CommissionService — simulation, ou Notch Pay en mode test).
 class CollectorCommissionScreen extends StatelessWidget {
   const CollectorCommissionScreen({super.key});
 
@@ -26,6 +33,7 @@ class CollectorCommissionScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final authService = AuthService();
     final collectionService = CollectionService();
+    final commissionService = CommissionService();
     final uid = authService.currentUser?.uid ?? '';
     return ValueListenableBuilder<ThemeMode>(
       valueListenable: appThemeMode,
@@ -79,11 +87,18 @@ class CollectorCommissionScreen extends StatelessWidget {
                                       final total = thisMonth.fold<double>(
                                           0, (sum, r) => sum + (r.valueFcfa ?? 0));
                                       final commission = thisMonth.fold<double>(
-                                          0, (sum, r) => sum + _commissionOf(r));
+                                          0, (sum, r) => sum + CommissionService.commissionOf(r));
 
+                                      return StreamBuilder<List<CommissionPayment>>(
+                                        stream: commissionService.watchPayments(uid),
+                                        builder: (context, paySnap) {
+                                      final payments = paySnap.data ?? const <CommissionPayment>[];
+                                      final outstanding = CommissionService.outstanding(all, payments);
                                       return ListView(
                                         padding: const EdgeInsets.only(top: 14, bottom: 20),
                                         children: [
+                                          _outstandingCard(context, uid, outstanding, fr),
+                                          const SizedBox(height: 14),
                                           Container(
                                             padding: const EdgeInsets.all(18),
                                             decoration: BoxDecoration(
@@ -147,6 +162,16 @@ class CollectorCommissionScreen extends StatelessWidget {
                                             )
                                           else
                                             ...thisMonth.map((r) => _tile(r, fr)),
+                                          if (payments.isNotEmpty) ...[
+                                            const SizedBox(height: 14),
+                                            Text(fr ? "Mes règlements" : "My payments",
+                                                style: TextStyle(
+                                                    fontSize: 13,
+                                                    fontWeight: FontWeight.w800,
+                                                    color: AppColors.mainText)),
+                                            const SizedBox(height: 10),
+                                            ...payments.map((p) => _paymentTile(p, fr)),
+                                          ],
                                           const SizedBox(height: 20),
                                           OutlinedButton.icon(
                                             onPressed: () => Navigator.of(context).push(
@@ -156,6 +181,8 @@ class CollectorCommissionScreen extends StatelessWidget {
                                           ),
                                           const SizedBox(height: 20),
                                         ],
+                                      );
+                                        },
                                       );
                                     },
                                   ),
@@ -214,7 +241,7 @@ class CollectorCommissionScreen extends StatelessWidget {
             children: [
               Text(fr ? "Commission" : "Commission",
                   style: TextStyle(fontSize: 10, color: AppColors.textGray)),
-              Text("${_commissionOf(r).toStringAsFixed(0)} FCFA",
+              Text("${CommissionService.commissionOf(r).toStringAsFixed(0)} FCFA",
                   style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w800, color: AppColors.greenDeep)),
             ],
           ),
@@ -223,9 +250,88 @@ class CollectorCommissionScreen extends StatelessWidget {
     );
   }
 
-  static double _commissionOf(CollectionRequest r) =>
-      r.commissionFcfa ??
-      RewardsConfig.commissionForCollection(r.category, r.weightKg ?? 0);
+  Widget _outstandingCard(BuildContext context, String uid, int outstanding, bool fr) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppColors.line, width: 1.2),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(fr ? "Reste à payer" : "Amount owed",
+              style: TextStyle(fontSize: 12, color: AppColors.textGray)),
+          const SizedBox(height: 2),
+          Text("$outstanding FCFA",
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: AppColors.mainText)),
+          const SizedBox(height: 12),
+          if (outstanding > 0)
+            GradientPillButton(
+              label: fr ? "Payer maintenant" : "Pay now",
+              trailingIcon: Icons.payments_outlined,
+              onPressed: () async {
+                final result = await CommissionPaymentSheet.show(context,
+                    collectorUid: uid, amountFcfa: outstanding, fr: fr);
+                if (result != null && result.isSuccess && context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                      content: Text(fr
+                          ? "Commission payée : $outstanding FCFA ✅"
+                          : "Commission paid: $outstanding FCFA ✅")));
+                }
+              },
+            )
+          else
+            Text(fr ? "Vous êtes à jour 👍" : "You're all paid up 👍",
+                style: const TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.greenDeep)),
+        ],
+      ),
+    );
+  }
+
+  Widget _paymentTile(CommissionPayment p, bool fr) {
+    final (IconData icon, Color color, String label) = p.isSuccess
+        ? (Icons.check_circle, AppColors.greenDeep, fr ? "Payé" : "Paid")
+        : p.isPending
+            ? (Icons.hourglass_top, Colors.orange, fr ? "En attente" : "Pending")
+            : (Icons.cancel, Colors.redAccent, fr ? "Échoué" : "Failed");
+    final operator = MobileMoneyOperator.values
+        .where((o) => o.channel == p.channel)
+        .map((o) => o.label)
+        .firstOrNull;
+    final d = p.createdAt;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.line, width: 1.2),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: color),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text("${p.amountFcfa} FCFA",
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: AppColors.mainText)),
+                Text(
+                    "${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}"
+                    " · ${operator ?? p.channel} · ${p.mode}",
+                    style: TextStyle(fontSize: 10.5, color: AppColors.textGray)),
+              ],
+            ),
+          ),
+          Text(label, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: color)),
+        ],
+      ),
+    );
+  }
 
   String _monthLabel(DateTime now, bool fr) {
     const frMonths = [

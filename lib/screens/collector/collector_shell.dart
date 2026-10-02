@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import '../../widgets/user_avatar.dart';
 import 'package:remixicon/remixicon.dart';
 import '../../core/l10n/app_language.dart';
 import '../../core/l10n/strings.dart';
@@ -294,11 +295,10 @@ class _CollectorDashboardTabState extends State<_CollectorDashboardTab> {
                           const SizedBox(width: 14),
                           GestureDetector(
                             onTap: () => widget.onOpenTab(3),
-                            child: CircleAvatar(
-                              radius: 18,
-                              backgroundColor: AppColors.line,
-                              child: Icon(RemixIcons.user_fill,
-                                  size: 20, color: AppColors.textGray),
+                            child: UserAvatar(
+                              photoUrl: data?['photoUrl'] as String?,
+                              fullName: (data?['fullName'] as String?) ?? '',
+                              size: 36,
                             ),
                           ),
                         ],

@@ -3,7 +3,10 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:firebase_ai/firebase_ai.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
+import '../ai_firebase_options.dart';
 import 'ai_model_settings.dart';
 import 'ai_prompts.dart';
 
@@ -37,16 +40,24 @@ typedef GeminiGenerate = Future<String?> Function({
   required GenerationConfig config,
 });
 
-/// Unique point de contact avec l'IA (texte ET image), via **Firebase AI
-/// Logic** (paquet `firebase_ai`, API Gemini Developer) : aucune clé d'API
-/// dans l'app ni aucun serveur à héberger, c'est le projet Firebase qui
-/// sert d'identifiant. Les modèles viennent de Remote Config (voir
-/// [AiModelSettings]) : le premier est essayé, puis le modèle de secours
-/// s'il est surchargé ou indisponible.
+/// Unique point de contact avec l'IA (texte ET image). Deux chemins :
+/// - clé `GEMINI_API_KEY` fournie au build (`.env` +
+///   `flutter run --dart-define-from-file=.env`) : appel direct à l'API
+///   Gemini avec cette clé — nécessaire tant que Google refuse l'accès à
+///   Gemini au projet Firebase `ecolindk` ("Your project has been denied
+///   access"). La clé est alors dans l'app : la restreindre à l'API
+///   "Generative Language" dans Google Cloud Console ;
+/// - sinon **Firebase AI Logic** (paquet `firebase_ai`) : aucune clé dans
+///   l'app, c'est le projet Firebase qui sert d'identifiant.
+/// Les modèles viennent de Remote Config (voir [AiModelSettings]) : le
+/// premier est essayé, puis le modèle de secours s'il est surchargé ou
+/// indisponible.
 class GeminiService {
   GeminiService({GeminiGenerate? generate, List<String>? models})
-      : _generate = generate ?? _firebaseGenerate,
+      : _generate = generate ?? (_apiKey.isNotEmpty ? _restGenerate : _firebaseGenerate),
         _models = models;
+
+  static const _apiKey = String.fromEnvironment('GEMINI_API_KEY');
 
   final GeminiGenerate _generate;
   final List<String>? _models;
@@ -58,19 +69,102 @@ class GeminiService {
     return list.where((m) => m.isNotEmpty).toSet().toList();
   }
 
+  /// Projet Firebase de l'IA : le projet principal, ou celui défini dans
+  /// [aiFirebaseOptions] (initialisé une seule fois, sous le nom "ai").
+  static Future<FirebaseApp> _aiApp() async {
+    final options = aiFirebaseOptions;
+    if (options == null) return Firebase.app();
+    try {
+      return Firebase.app('ai');
+    } on FirebaseException {
+      return Firebase.initializeApp(name: 'ai', options: options);
+    }
+  }
+
   static Future<String?> _firebaseGenerate({
     required String model,
     Content? systemInstruction,
     required List<Content> contents,
     required GenerationConfig config,
   }) async {
-    final generative = FirebaseAI.googleAI().generativeModel(
+    final generative = FirebaseAI.googleAI(app: await _aiApp()).generativeModel(
       model: model,
       systemInstruction: systemInstruction,
       generationConfig: config,
     );
     final response = await generative.generateContent(contents);
     return response.text;
+  }
+
+  /// Appel direct à l'API Gemini avec [_apiKey] — même corps JSON que
+  /// Firebase AI Logic (sérialisation de `firebase_ai`), seule l'adresse et
+  /// l'identification changent.
+  static Future<String?> _restGenerate({
+    required String model,
+    Content? systemInstruction,
+    required List<Content> contents,
+    required GenerationConfig config,
+  }) =>
+      restGenerate(
+        client: http.Client(),
+        apiKey: _apiKey,
+        model: model,
+        systemInstruction: systemInstruction,
+        contents: contents,
+        config: config,
+      );
+
+  @visibleForTesting
+  static Future<String?> restGenerate({
+    required http.Client client,
+    required String apiKey,
+    required String model,
+    Content? systemInstruction,
+    required List<Content> contents,
+    required GenerationConfig config,
+  }) async {
+    final body = <String, Object?>{
+      'contents': contents.map((c) => c.toJson()).toList(),
+      'generationConfig': config.toJson(),
+      // Le rôle "system" de Content.system n'a pas cours ici : seules
+      // les parties comptent.
+      if (systemInstruction != null)
+        'systemInstruction': {'parts': (systemInstruction.toJson()['parts'])},
+    };
+    try {
+      final res = await client.post(
+        Uri.https('generativelanguage.googleapis.com', '/v1beta/models/$model:generateContent'),
+        headers: {'x-goog-api-key': apiKey, 'Content-Type': 'application/json'},
+        body: jsonEncode(body),
+      );
+      if (res.statusCode == 429) throw GeminiServiceException('rate-limited', res.body);
+      if (res.statusCode == 400 && res.body.contains('API_KEY_INVALID') || res.statusCode == 403) {
+        throw GeminiServiceException('not-configured', res.body);
+      }
+      if (res.statusCode != 200) {
+        throw GeminiServiceException('http-error', 'HTTP ${res.statusCode} ${res.body}');
+      }
+      return textOf(res.body);
+    } finally {
+      client.close();
+    }
+  }
+
+  /// Texte de la première réponse (hors parties de "réflexion" du modèle).
+  @visibleForTesting
+  static String? textOf(String body) {
+    final json = jsonDecode(body);
+    final candidates = json is Map ? json['candidates'] : null;
+    if (candidates is! List || candidates.isEmpty) return null;
+    final content = (candidates.first as Map?)?['content'];
+    final parts = content is Map ? content['parts'] : null;
+    if (parts is! List) return null;
+    final text = parts
+        .whereType<Map>()
+        .where((p) => p['thought'] != true && p['text'] is String)
+        .map((p) => p['text'] as String)
+        .join();
+    return text.isEmpty ? null : text;
   }
 
   /// Envoie l'historique + le nouveau message, renvoie la réponse. Les

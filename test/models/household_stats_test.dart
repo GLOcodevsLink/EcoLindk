@@ -32,7 +32,7 @@ CollectionRequest req(
 void main() {
   final now = DateTime(2026, 9, 29, 15); // mardi
 
-  test('aucun post → que des zéros, jamais de valeur inventée', () {
+  test('no post → only zeros, never made-up values', () {
     final s = HouseholdStats.from(const [], now: now);
     expect(s.totalPosts, 0);
     expect(s.completionRate, 0);
@@ -42,7 +42,7 @@ void main() {
     expect(s.kgByCategory, isEmpty);
   });
 
-  test('compte les posts par statut réel et additionne kg et points confirmés', () {
+  test('counts posts by real status and sums confirmed kg and points', () {
     final s = HouseholdStats.from([
       req(RequestStatus.completed, weightKg: 11, points: 33, completedAt: DateTime(2026, 9, 29, 9)),
       req(RequestStatus.completed,
@@ -62,7 +62,7 @@ void main() {
     expect(s.kgByCategory.map((e) => e.key), [WasteCategory.plastic, WasteCategory.metal]);
   });
 
-  test('7 derniers jours : kg rangés au bon jour, aujourd\'hui en dernier', () {
+  test('last 7 days: kg on the right day, today last', () {
     final s = HouseholdStats.from([
       req(RequestStatus.completed, weightKg: 4, completedAt: DateTime(2026, 9, 29, 8)),
       req(RequestStatus.completed, weightKg: 1.5, completedAt: DateTime(2026, 9, 29, 20)),

@@ -24,7 +24,12 @@ class ZonePickerScreen extends StatefulWidget {
   /// Zone à modifier (préremplit le pays), `null` pour un ajout.
   final CollectionZone? editing;
 
-  const ZonePickerScreen({super.key, this.initialCountry, this.editing});
+  /// Titre et libellé du bouton final, pour réutiliser cet écran ailleurs
+  /// que pour les zones de collecte (ex. adresse d'un post).
+  final String? title;
+  final String? confirmLabel;
+
+  const ZonePickerScreen({super.key, this.initialCountry, this.editing, this.title, this.confirmLabel});
 
   @override
   State<ZonePickerScreen> createState() => _ZonePickerScreenState();
@@ -200,9 +205,10 @@ class _ZonePickerScreenState extends State<ZonePickerScreen> {
                             icon: Icon(Icons.arrow_back, color: AppColors.heading),
                           ),
                           Text(
-                              widget.editing == null
-                                  ? (fr ? "Ajouter une zone" : "Add a zone")
-                                  : (fr ? "Modifier la zone" : "Edit zone"),
+                              widget.title ??
+                                  (widget.editing == null
+                                      ? (fr ? "Ajouter une zone" : "Add a zone")
+                                      : (fr ? "Modifier la zone" : "Edit zone")),
                               style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: AppColors.heading)),
                         ],
                       ),
@@ -257,7 +263,7 @@ class _ZonePickerScreenState extends State<ZonePickerScreen> {
                       Padding(
                         padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
                         child: GradientPillButton(
-                          label: fr ? "Enregistrer cette zone" : "Save this zone",
+                          label: widget.confirmLabel ?? (fr ? "Enregistrer cette zone" : "Save this zone"),
                           trailingIcon: Icons.check_rounded,
                           onPressed: _confirm,
                         ),

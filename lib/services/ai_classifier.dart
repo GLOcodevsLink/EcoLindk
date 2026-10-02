@@ -35,7 +35,8 @@ class AiClassificationResult {
 class AiClassifier {
   const AiClassifier._();
 
-  static Future<AiClassificationResult> classify(String? imagePath) async {
+  /// [gemini] : service IA à utiliser (injectable pour les tests).
+  static Future<AiClassificationResult> classify(String? imagePath, {GeminiService? gemini}) async {
     if (imagePath == null || imagePath.isEmpty) {
       throw const AiClassificationException('no-image');
     }
@@ -51,18 +52,19 @@ class AiClassifier {
       throw const AiClassificationException('invalid-image');
     }
 
-    return classifyBytes(bytes, _mimeTypeFor(imagePath));
+    return classifyBytes(bytes, _mimeTypeFor(imagePath), gemini: gemini);
   }
 
   /// Même analyse, à partir d'une image déjà en mémoire — typiquement la
   /// version compressée préparée dès le choix de la photo (voir
   /// PostWasteScreen) : quelques centaines de Ko à envoyer au lieu de
   /// plusieurs Mo, donc une analyse bien plus rapide sur réseau mobile.
-  static Future<AiClassificationResult> classifyBytes(List<int> bytes, String mimeType) async {
+  static Future<AiClassificationResult> classifyBytes(List<int> bytes, String mimeType,
+      {GeminiService? gemini}) async {
     if (bytes.isEmpty) throw const AiClassificationException('invalid-image');
     Map<String, dynamic> json;
     try {
-      json = await GeminiService().classifyWasteImage(
+      json = await (gemini ?? GeminiService()).classifyWasteImage(
         imageBytes: bytes,
         mimeType: mimeType,
       );

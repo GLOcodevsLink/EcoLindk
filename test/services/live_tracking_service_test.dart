@@ -11,7 +11,7 @@ void main() {
     tracking = LiveTrackingService(firestore: db);
   });
 
-  test('chaque partie voit la position de l\'autre bouger en direct', () async {
+  test('each party sees the other one move live', () async {
     final seen = <LiveTrackingSnapshot>[];
     final sub = tracking.watch('req1').listen(seen.add);
 
@@ -33,7 +33,7 @@ void main() {
     await sub.cancel();
   });
 
-  test('positions effacées à la fin de la collecte', () async {
+  test('positions are cleared at the end of the collection', () async {
     await tracking.updatePosition('req1', TrackingRole.collector, 4.05, 9.76);
     await tracking.clear('req1');
     final snap = await tracking.watch('req1').first;

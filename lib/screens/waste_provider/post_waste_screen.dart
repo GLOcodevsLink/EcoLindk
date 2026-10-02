@@ -1,36 +1,42 @@
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:country_picker/country_picker.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:remixicon/remixicon.dart';
 import '../../core/l10n/app_language.dart';
+import '../../core/phone_country.dart';
 import '../../core/rewards_config.dart';
 import '../../core/theme.dart';
+import '../../core/validators.dart';
 import '../../models/collection_request.dart';
+import '../../models/collection_zone.dart';
 import '../../services/ai_classifier.dart';
 import '../../services/auth_service.dart';
 import '../../services/collection_service.dart';
 import '../../services/waste_photo_service.dart';
 import '../../services/geo_helper.dart';
-import '../../services/geocoding_service.dart';
 import '../../widgets/decorative_leaves.dart';
 import '../../widgets/gradient_pill_button.dart';
 import '../../widgets/osm_map_preview.dart';
 import '../../widgets/waste_category_picker.dart';
 import '../../widgets/wp_common.dart';
+import '../collector/zone_picker_screen.dart';
 import 'request_status_screen.dart';
 
-/// Poster un déchet, en 3 étapes :
-/// 0. **Votre déchet** — photo et description OBLIGATOIRES ; catégorie et
-///    poids FACULTATIFS (l'utilisateur peut laisser l'IA décider).
-/// 1. **Analyse IA** (voir AiClassifier) — le résultat s'affiche avec
-///    "Accepter" (les valeurs de l'IA deviennent automatiquement celles du
-///    post) ou "Refuser" (l'utilisateur corrige les valeurs proposées, et ce
-///    sont ses corrections qui sont enregistrées). Si l'analyse échoue, il
-///    peut réessayer ou continuer avec ses propres valeurs.
-/// 2. **Adresse et envoi** — GPS réel ou adresse tapée (voir GeoHelper),
+/// Poster un déchet, en 4 étapes :
+/// 0. **Votre déchet** — photo et description, obligatoires.
+/// 1. **Analyse IA** — deux choix : "Analyser avec l'IA" ou "Continuer sans
+///    l'IA". Avec l'IA, le résultat s'affiche avec "Accepter" (les valeurs
+///    de l'IA deviennent automatiquement celles du post) ou "Refuser".
+/// 2. **Détails** — catégorie et quantité, obligatoires. Affichée si
+///    l'utilisateur continue sans l'IA, refuse son résultat (formulaire
+///    prérempli avec les valeurs de l'IA, pour les dernières corrections) ou
+///    si l'IA n'a pas pu estimer le poids ; sautée si le résultat accepté est
+///    complet.
+/// 3. **Adresse et envoi** — GPS réel ou ville et quartier (voir GeoHelper),
 ///    récapitulatif, envoi.
 class PostWasteScreen extends StatefulWidget {
   const PostWasteScreen({super.key});
@@ -39,18 +45,19 @@ class PostWasteScreen extends StatefulWidget {
   State<PostWasteScreen> createState() => _PostWasteScreenState();
 }
 
-enum _AiDecision { none, accepted, refused, unavailable }
+/// `skipped` : l'utilisateur a choisi de continuer sans l'IA ;
+/// `unavailable` : l'analyse a échoué et il a continué sans elle.
+enum _AiDecision { none, accepted, refused, skipped, unavailable }
 
 class _PostWasteScreenState extends State<PostWasteScreen> {
   int _step = 0;
 
   final _authService = AuthService();
   final _collectionService = CollectionService();
-  final _geocodingService = GeocodingService();
   final _descriptionCtrl = TextEditingController();
   final _addressCtrl = TextEditingController();
 
-  // Étape 0 — saisie initiale (catégorie/poids facultatifs).
+  // Étape 0 — photo et description.
   File? _imageFile;
 
   /// Version compressée de la photo (voir WastePhotoService.compress),
@@ -59,29 +66,34 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
   /// quelques centaines de Ko à envoyer au lieu de plusieurs Mo.
   Future<Uint8List>? _compressed;
   int? _compressedSize; // `null` tant que la compression est en cours
-  WasteCategory? _userCategory;
-  final _userWeightCtrl = TextEditingController();
   bool _triedStep0 = false;
 
-  // Étape 1 — IA puis valeurs retenues pour le post.
+  // Étape 1 — IA ; étape 2 — valeurs retenues pour le post.
   bool _aiRunning = false;
   AiClassificationResult? _aiResult;
   String? _aiError;
+  String? _aiErrorCode;
+  String? _weightError;
   _AiDecision _decision = _AiDecision.none;
   WasteCategory? _finalCategory;
   final _finalWeightCtrl = TextEditingController();
 
-  /// Résultat accepté mais sans poids (ni estimé par l'IA, ni saisi avant) :
-  /// on le demande. Figé au moment d'accepter, pour que le champ ne
-  /// disparaisse pas dès le premier chiffre tapé.
-  bool _askWeight = false;
+  /// Résultat de l'IA accepté et complet : l'étape "Détails" a été sautée
+  /// (le bouton retour de l'adresse ramène alors à l'analyse).
+  bool _formSkipped = false;
 
-  // Étape 2 — adresse.
+  // Étape 3 — adresse.
   bool _useGps = true;
   ResolvedLocation? _location;
   bool _locating = false;
   String? _locationError;
-  bool _geocoding = false;
+
+  /// Adresse choisie dans la liste (pays → ville → quartier, comme les zones
+  /// de collecte) quand le Fournisseur n'utilise pas son GPS.
+  CollectionZone? _pickedPlace;
+
+  /// Pays prérempli depuis l'indicatif de son numéro de téléphone.
+  Country? _phoneCountry;
 
   bool _submitting = false;
   String? _submitError;
@@ -91,10 +103,20 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
   bool get _isDesktop => !kIsWeb && (Platform.isLinux || Platform.isWindows || Platform.isMacOS);
 
   @override
+  void initState() {
+    super.initState();
+    final uid = _authService.currentUser?.uid;
+    if (uid != null) {
+      _authService.fetchUserDocument(uid).then((doc) {
+        if (mounted) setState(() => _phoneCountry = countryFromPhone(doc.data()?['phone'] as String?));
+      }).catchError((_) {});
+    }
+  }
+
+  @override
   void dispose() {
     _descriptionCtrl.dispose();
     _addressCtrl.dispose();
-    _userWeightCtrl.dispose();
     _finalWeightCtrl.dispose();
     super.dispose();
   }
@@ -122,7 +144,9 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
       // Nouvelle photo : l'ancienne analyse ne vaut plus rien.
       _aiResult = null;
       _aiError = null;
+      _aiErrorCode = null;
       _decision = _AiDecision.none;
+      _formSkipped = false;
     });
     compressed.then((jpeg) {
       if (mounted && _compressed == compressed) setState(() => _compressedSize = jpeg.length);
@@ -161,22 +185,18 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
   }
 
   // ---------------------------------------------------------------- étapes
-  bool get _userWeightInvalid => _userWeightCtrl.text.trim().isNotEmpty && _parseKg(_userWeightCtrl) == null;
-
-  void _goToAnalysis() {
+  /// Étape 0 → 1 : photo et description obligatoires.
+  void _goToChoice() {
     setState(() => _triedStep0 = true);
-    if (_imageFile == null || _descriptionCtrl.text.trim().isEmpty) {
-      _snack(_fr
-          ? "Ajoutez une photo et une description avant l'analyse."
-          : "Add a photo and a description before the analysis.");
+    final descriptionError = Validators.wasteDescription(_descriptionCtrl.text, fr: _fr);
+    if (_imageFile == null || descriptionError != null) {
+      _snack(_imageFile == null
+          ? (_fr ? "Ajoutez une photo du déchet pour continuer." : "Add a photo of the waste to continue.")
+          : descriptionError!);
       return;
     }
-    if (_userWeightInvalid) {
-      _snack(_fr ? "Le poids doit être un nombre de kg." : "The weight must be a number of kg.");
-      return;
-    }
+    FocusScope.of(context).unfocus();
     setState(() => _step = 1);
-    if (_aiResult == null && !_aiRunning) _runAi();
   }
 
   Future<void> _runAi() async {
@@ -198,12 +218,14 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
       if (!mounted) return;
       setState(() {
         _aiResult = result;
+        _aiError = null;
         _aiRunning = false;
       });
     } on AiClassificationException catch (e) {
       if (!mounted) return;
       setState(() {
         _aiRunning = false;
+        _aiErrorCode = e.code;
         _aiError = _aiErrorMessage(e.code, _fr);
       });
     } catch (_) {
@@ -228,61 +250,82 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
         _ => fr ? "Échec de l'analyse." : "Analysis failed.",
       };
 
-  /// Accepter : les valeurs de l'IA deviennent celles du post. Si l'IA n'a
-  /// pas estimé le poids, on garde celui saisi par l'utilisateur (sinon il
-  /// devra l'indiquer).
+  /// Accepter : les valeurs de l'IA deviennent automatiquement celles du
+  /// post. Si elle a estimé le poids, on passe directement à l'adresse ;
+  /// sinon, le formulaire s'ouvre (catégorie déjà remplie) pour l'indiquer.
   void _accept() {
     final ai = _aiResult!;
+    final w = ai.estimatedWeightKg;
+    // Poids estimé hors des limites de l'app : le formulaire s'ouvre pour
+    // que l'utilisateur le corrige.
+    final weightError = w == null ? null : Validators.postQuantity(w, fr: _fr);
+    final complete = w != null && weightError == null;
     setState(() {
       _decision = _AiDecision.accepted;
       _finalCategory = ai.category;
-      final w = ai.estimatedWeightKg ?? _parseKg(_userWeightCtrl);
       _finalWeightCtrl.text = w == null ? '' : _fmtNumber(w);
-      _askWeight = w == null;
+      _weightError = weightError;
+      _formSkipped = complete;
+      _step = complete ? 3 : 2;
     });
   }
 
-  /// Refuser : formulaire de correction prérempli avec les valeurs de l'IA.
+  /// Refuser : le formulaire s'ouvre, prérempli avec les valeurs de l'IA,
+  /// pour que l'utilisateur y apporte ses dernières corrections.
   void _refuse() {
     final ai = _aiResult!;
+    final w = ai.estimatedWeightKg;
     setState(() {
       _decision = _AiDecision.refused;
       _finalCategory = ai.category;
-      final w = ai.estimatedWeightKg ?? _parseKg(_userWeightCtrl);
       _finalWeightCtrl.text = w == null ? '' : _fmtNumber(w);
+      _formSkipped = false;
+      _step = 2;
     });
   }
 
-  /// Analyse impossible : l'utilisateur continue avec ses propres valeurs.
+  /// "Continuer sans l'IA" (ou analyse impossible) : formulaire vide.
   void _continueWithoutAi() {
     setState(() {
-      _decision = _AiDecision.unavailable;
-      _finalCategory = _userCategory;
-      final w = _parseKg(_userWeightCtrl);
-      _finalWeightCtrl.text = w == null ? '' : _fmtNumber(w);
+      _decision = _aiError != null ? _AiDecision.unavailable : _AiDecision.skipped;
+      _finalCategory = null;
+      _finalWeightCtrl.clear();
+      _formSkipped = false;
+      _step = 2;
     });
   }
 
+  /// Étape 2 → 3 : catégorie et quantité obligatoires.
   void _goToAddress() {
-    if (_decision == _AiDecision.none) {
-      _snack(_fr ? "Acceptez ou refusez le résultat de l'IA." : "Accept or reject the AI result.");
+    if (_finalCategory == null) {
+      _snack(_fr ? "Choisissez une catégorie." : "Choose a category.");
       return;
     }
-    if (_finalCategory == null || _parseKg(_finalWeightCtrl) == null) {
-      _snack(_fr
-          ? "Choisissez une catégorie et indiquez le poids, en kg."
-          : "Choose a category and enter the weight, in kg.");
+    final weightError = Validators.postQuantity(_parseKg(_finalWeightCtrl), fr: _fr);
+    setState(() => _weightError = weightError);
+    if (weightError != null) {
+      _snack(weightError);
       return;
     }
-    setState(() => _step = 2);
+    FocusScope.of(context).unfocus();
+    setState(() => _step = 3);
   }
 
   void _back() {
-    if (_step == 0) {
-      Navigator.of(context).pop();
-    } else {
-      setState(() => _step -= 1);
-    }
+    setState(() {
+      switch (_step) {
+        case 0:
+          Navigator.of(context).pop();
+        case 1:
+          _step = 0;
+        case 2:
+          _step = 1;
+        default:
+          _step = _formSkipped ? 1 : 2;
+      }
+      // Retour à l'analyse : l'utilisateur peut refaire son choix.
+      if (_step == 1) _decision = _AiDecision.none;
+    });
   }
 
   // ---------------------------------------------------------------- adresse
@@ -316,34 +359,39 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
     });
   }
 
-  /// Géocode l'adresse tapée via Nominatim — une seule fois, au tap.
-  Future<void> _useTypedAddress() async {
+  /// Adresse sans GPS : même sélection que les zones de collecte — pays
+  /// prérempli depuis le numéro, puis ville et quartier proposés par
+  /// OpenStreetMap. Le point du post est celui du quartier choisi.
+  Future<void> _pickPlace() async {
     final fr = _fr;
-    final address = _addressCtrl.text.trim();
-    if (address.isEmpty) return;
+    final place = await Navigator.of(context).push<CollectionZone>(MaterialPageRoute(
+      builder: (_) => ZonePickerScreen(
+        initialCountry: _phoneCountry,
+        editing: _pickedPlace,
+        title: fr ? "Adresse du déchet" : "Waste address",
+        confirmLabel: fr ? "Utiliser ce quartier" : "Use this neighborhood",
+      ),
+    ));
+    if (place == null || !mounted || !place.hasCoordinates) return;
     setState(() {
-      _geocoding = true;
+      _pickedPlace = place;
       _locationError = null;
+      _location = ResolvedLocation(latitude: place.latitude!, longitude: place.longitude!, isApproximate: true);
+      _addressCtrl.text = "${place.neighborhood}, ${place.city}";
     });
-    try {
-      final result = await _geocodingService.geocode(address);
-      if (!mounted) return;
-      setState(() {
-        _location = ResolvedLocation(latitude: result.latitude, longitude: result.longitude, isApproximate: true);
-        _geocoding = false;
-      });
-    } on GeocodingException catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _geocoding = false;
-        _locationError = switch (e.code) {
-          'not-found' => fr ? "Adresse introuvable. Précisez-la et réessayez." : "Address not found. Refine it and try again.",
-          'timeout' => fr ? "La recherche a pris trop de temps." : "The search took too long.",
-          'network' => fr ? "Problème de connexion réseau." : "Network connection problem.",
-          _ => fr ? "Géocodage impossible. Réessayez." : "Couldn't locate this address. Try again.",
-        };
-      });
-    }
+  }
+
+  /// Changer de mode efface l'adresse précédente : jamais de mélange entre
+  /// un point GPS et un quartier choisi.
+  void _setAddressMode(bool useGps) {
+    if (useGps == _useGps) return;
+    setState(() {
+      _useGps = useGps;
+      _location = null;
+      _pickedPlace = null;
+      _locationError = null;
+      _addressCtrl.clear();
+    });
   }
 
   // ---------------------------------------------------------------- envoi
@@ -387,7 +435,8 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
         description: _descriptionCtrl.text.trim(),
         category: _finalCategory!,
         quantityRange: _fmtKg(weight),
-        aiRequested: true,
+        // L'analyse a été demandée, sauf si l'utilisateur a continué sans l'IA.
+        aiRequested: _decision != _AiDecision.skipped,
         aiSuggestedCategory: _aiResult?.category,
         aiConfidence: _aiResult?.confidence,
         aiEstimatedWeightKg: _aiResult?.estimatedWeightKg,
@@ -396,6 +445,8 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
         latitude: _location!.latitude,
         longitude: _location!.longitude,
         locationIsApproximate: _location!.isApproximate,
+        neighborhood: _pickedPlace?.neighborhood,
+        city: _pickedPlace?.city,
       );
 
       if (!mounted) return;
@@ -453,14 +504,35 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
                             ],
                           ),
                         ),
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(20, 6, 20, 0),
+                        // En-tête des étapes posé sur sa propre carte, bien
+                        // détaché du contenu (demande explicite : la page
+                        // était "trop collée" à la partie du haut).
+                        Container(
+                          margin: const EdgeInsets.fromLTRB(16, 8, 16, 6),
+                          padding: const EdgeInsets.fromLTRB(14, 14, 14, 10),
+                          decoration: BoxDecoration(
+                            color: AppColors.card,
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: AppColors.line, width: 1.1),
+                            boxShadow: [
+                              BoxShadow(
+                                  color: AppColors.greenMid.withValues(alpha: 0.10),
+                                  blurRadius: 16,
+                                  offset: const Offset(0, 6)),
+                            ],
+                          ),
                           child: _StepHeader(step: _step, fr: fr),
                         ),
                         Expanded(
                           child: AnimatedSwitcher(
                             duration: const Duration(milliseconds: 260),
                             switchInCurve: Curves.easeOutCubic,
+                            // Contenu aligné en haut (par défaut, centré : grand
+                            // vide au-dessus des pages courtes).
+                            layoutBuilder: (current, previous) => Stack(
+                              alignment: Alignment.topCenter,
+                              children: [...previous, if (current != null) current],
+                            ),
                             transitionBuilder: (child, anim) => FadeTransition(
                               opacity: anim,
                               child: SlideTransition(
@@ -470,10 +542,11 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
                             ),
                             child: SingleChildScrollView(
                               key: ValueKey(_step),
-                              padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
+                              padding: const EdgeInsets.fromLTRB(20, 24, 20, 16),
                               child: switch (_step) {
                                 0 => _wasteStep(fr),
                                 1 => _analysisStep(fr),
+                                2 => _formStep(fr),
                                 _ => _addressStep(fr),
                               },
                             ),
@@ -510,14 +583,10 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
           const SizedBox(height: 10),
         ],
         switch (_step) {
-          0 => GradientPillButton(
-              label: fr ? "Analyser avec l'IA" : "Analyze with AI",
-              trailingIcon: RemixIcons.sparkling_2_fill,
-              onPressed: _goToAnalysis,
-            ),
-          1 => (_decision == _AiDecision.none)
-              ? const SizedBox.shrink()
-              : GradientPillButton(label: fr ? "Continuer" : "Continue", onPressed: _goToAddress),
+          0 => GradientPillButton(label: fr ? "Suivant" : "Next", onPressed: _goToChoice),
+          // Étape 1 : les choix sont dans la page elle-même.
+          1 => const SizedBox.shrink(),
+          2 => GradientPillButton(label: fr ? "Continuer" : "Continue", onPressed: _goToAddress),
           _ => GradientPillButton(
               label: fr ? "Publier le déchet" : "Post the waste",
               trailingIcon: Icons.send_rounded,
@@ -531,7 +600,7 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
   // ---------------------------------------------------------------- étape 0
   Widget _wasteStep(bool fr) {
     final missingPhoto = _triedStep0 && _imageFile == null;
-    final missingDescription = _triedStep0 && _descriptionCtrl.text.trim().isEmpty;
+    final descriptionError = _triedStep0 ? Validators.wasteDescription(_descriptionCtrl.text, fr: fr) : null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -546,6 +615,7 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
             controller: _descriptionCtrl,
             maxLines: 3,
             minLines: 2,
+            maxLength: 300,
             textCapitalization: TextCapitalization.sentences,
             onChanged: (_) {
               if (_triedStep0) setState(() {});
@@ -558,45 +628,61 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
               enabledBorder: InputBorder.none,
               focusedBorder: InputBorder.none,
               filled: false,
-              errorText: missingDescription ? (fr ? "La description est obligatoire." : "A description is required.") : null,
+              errorText: descriptionError,
             ),
           ),
         ),
-        const SizedBox(height: 22),
-        _sectionTitle(fr ? "Catégorie" : "Category", required: false, fr: fr),
+      ],
+    );
+  }
+
+  // ---------------------------------------------------------------- étape 2
+  /// Catégorie et quantité (obligatoires) : saisies par l'utilisateur, ou
+  /// préremplies avec le résultat de l'IA qu'il corrige.
+  Widget _formStep(bool fr) {
+    final (title, note) = switch (_decision) {
+      _AiDecision.refused => (
+          fr ? "Corrigez les informations" : "Correct the details",
+          fr
+              ? "Pré-rempli avec le résultat de l'IA : modifiez ce qui ne convient pas."
+              : "Pre-filled with the AI result: change what isn't right."
+        ),
+      _AiDecision.accepted => (
+          fr ? "Indiquez la quantité" : "Enter the quantity",
+          fr ? "L'IA n'a pas pu estimer le poids." : "The AI couldn't estimate the weight."
+        ),
+      _ => (
+          fr ? "Catégorie et quantité" : "Category and quantity",
+          fr ? "Choisissez la catégorie du déchet et sa quantité." : "Choose the waste category and its quantity."
+        ),
+    };
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(title, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: AppColors.mainText)),
         const SizedBox(height: 4),
-        Text(
-            fr
-                ? "Facultatif : si vous hésitez, l'IA la déterminera à partir de la photo."
-                : "Optional: if you're not sure, the AI will work it out from the photo.",
-            style: TextStyle(fontSize: 11.5, color: AppColors.textGray)),
+        Text(note, style: TextStyle(fontSize: 12, color: AppColors.textGray)),
+        const SizedBox(height: 18),
+        _sectionTitle(fr ? "Catégorie" : "Category", required: true, fr: fr),
         const SizedBox(height: 10),
         WasteCategoryPicker(
-          selected: _userCategory,
+          selected: _finalCategory,
           fr: fr,
-          allowDeselect: true,
-          onChanged: (c) => setState(() => _userCategory = c),
+          onChanged: (c) => setState(() => _finalCategory = c),
         ),
         const SizedBox(height: 22),
-        _sectionTitle(fr ? "Poids estimé" : "Estimated weight", required: false, fr: fr),
+        _sectionTitle(fr ? "Quantité" : "Quantity", required: true, fr: fr),
         const SizedBox(height: 4),
-        Text(
-            fr ? "Facultatif : une estimation ou le poids exact." : "Optional: an estimate or the exact weight.",
+        Text(fr ? "Une estimation ou le poids exact, en kg." : "An estimate or the exact weight, in kg.",
             style: TextStyle(fontSize: 11.5, color: AppColors.textGray)),
         const SizedBox(height: 10),
         _card(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              WeightInput(controller: _userWeightCtrl, fr: fr, onChanged: () => setState(() {})),
-              if (_userWeightInvalid) ...[
-                const SizedBox(height: 6),
-                Text(fr ? "Entrez un nombre de kg valide." : "Enter a valid number of kg.",
-                    style: const TextStyle(fontSize: 11.5, color: Colors.redAccent)),
-              ],
-            ],
-          ),
-        ),
+            child: WeightInput(
+          controller: _finalWeightCtrl,
+          fr: fr,
+          errorText: _weightError,
+          onChanged: () => setState(() => _weightError = null),
+        )),
       ],
     );
   }
@@ -749,43 +835,136 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
   Widget _analysisStep(bool fr) {
     if (_aiRunning) return _analyzing(fr);
     final ai = _aiResult;
-    if (ai == null) return _aiFailed(fr);
+    if (ai == null) return _aiError != null ? _aiFailed(fr) : _choice(fr);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _aiResultCard(ai, fr),
         const SizedBox(height: 16),
-        if (_decision == _AiDecision.none)
-          Row(
-            children: [
-              Expanded(
-                child: SizedBox(
-                  height: 50,
-                  child: OutlinedButton.icon(
-                    onPressed: _refuse,
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: Colors.redAccent, width: 1.4),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
-                    ),
-                    icon: const Icon(Icons.close_rounded, color: Colors.redAccent, size: 18),
-                    label: Text(fr ? "Refuser" : "Reject",
-                        style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.w800)),
+        Row(
+          children: [
+            Expanded(
+              child: SizedBox(
+                height: 50,
+                child: OutlinedButton.icon(
+                  onPressed: _refuse,
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: Colors.redAccent, width: 1.4),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
                   ),
+                  icon: const Icon(Icons.close_rounded, color: Colors.redAccent, size: 18),
+                  label: Text(fr ? "Refuser" : "Reject",
+                      style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.w800)),
                 ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: GradientPillButton(
+                label: fr ? "Accepter" : "Accept",
+                trailingIcon: Icons.check_rounded,
+                onPressed: _accept,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Text(
+            fr
+                ? "Accepter : ces informations sont utilisées pour le post. Refuser : vous pourrez les corriger."
+                : "Accept: these details are used for the post. Reject: you can correct them.",
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 11.5, color: AppColors.textGray)),
+      ],
+    );
+  }
+
+  /// Les deux choix de l'étape 1.
+  Widget _choice(bool fr) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(fr ? "Comment voulez-vous continuer ?" : "How do you want to continue?",
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: AppColors.mainText)),
+        const SizedBox(height: 4),
+        Text(
+            fr
+                ? "L'IA peut reconnaître la catégorie et estimer la quantité à partir de votre photo."
+                : "The AI can recognize the category and estimate the quantity from your photo.",
+            style: TextStyle(fontSize: 12, color: AppColors.textGray)),
+        const SizedBox(height: 18),
+        _choiceCard(
+          icon: RemixIcons.sparkling_2_fill,
+          title: fr ? "Analyser avec l'IA" : "Analyze with AI",
+          subtitle: fr ? "Catégorie et quantité proposées automatiquement" : "Category and quantity suggested automatically",
+          highlighted: true,
+          onTap: _runAi,
+        ),
+        const SizedBox(height: 12),
+        _choiceCard(
+          icon: Icons.edit_note_rounded,
+          title: fr ? "Continuer sans l'IA" : "Continue without AI",
+          subtitle: fr ? "Je renseigne moi-même la catégorie et la quantité" : "I enter the category and quantity myself",
+          highlighted: false,
+          onTap: _continueWithoutAi,
+        ),
+      ],
+    );
+  }
+
+  Widget _choiceCard({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required bool highlighted,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(18),
+        onTap: onTap,
+        child: Ink(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            gradient: highlighted ? AppColors.buttonGradient : null,
+            color: highlighted ? null : AppColors.card,
+            borderRadius: BorderRadius.circular(18),
+            border: highlighted ? null : Border.all(color: AppColors.line, width: 1.2),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: highlighted ? Colors.white.withValues(alpha: 0.22) : AppColors.greenMid.withValues(alpha: 0.12),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(icon, color: highlighted ? Colors.white : AppColors.greenDeep, size: 22),
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: GradientPillButton(
-                  label: fr ? "Accepter" : "Accept",
-                  trailingIcon: Icons.check_rounded,
-                  onPressed: _accept,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title,
+                        style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w800,
+                            color: highlighted ? Colors.white : AppColors.mainText)),
+                    const SizedBox(height: 2),
+                    Text(subtitle,
+                        style: TextStyle(
+                            fontSize: 12, color: highlighted ? Colors.white70 : AppColors.textGray)),
+                  ],
                 ),
               ),
+              Icon(Icons.arrow_forward_rounded, color: highlighted ? Colors.white : AppColors.textGray),
             ],
-          )
-        else
-          _decisionPanel(fr),
-      ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -815,20 +994,31 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
           retryLabel: fr ? "Réessayer" : "Retry",
           onRetry: _runAi,
         ),
-        const SizedBox(height: 14),
-        if (_decision == _AiDecision.none)
+        if (_aiErrorCode == 'unsupported') ...[
+          const SizedBox(height: 14),
           SizedBox(
             height: 48,
-            child: OutlinedButton.icon(
-              onPressed: _continueWithoutAi,
-              style: OutlinedButton.styleFrom(
+            child: FilledButton.icon(
+              onPressed: () => setState(() => _step = 0),
+              style: FilledButton.styleFrom(
+                  backgroundColor: AppColors.greenMid,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999))),
-              icon: const Icon(Icons.edit_rounded, size: 18),
-              label: Text(fr ? "Continuer avec mes valeurs" : "Continue with my values"),
+              icon: const Icon(Icons.photo_camera_outlined, size: 18),
+              label: Text(fr ? "Changer la photo" : "Change the photo"),
             ),
-          )
-        else
-          _editForm(fr),
+          ),
+        ],
+        const SizedBox(height: 14),
+        SizedBox(
+          height: 48,
+          child: OutlinedButton.icon(
+            onPressed: _continueWithoutAi,
+            style: OutlinedButton.styleFrom(
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999))),
+            icon: const Icon(Icons.edit_note_rounded, size: 18),
+            label: Text(fr ? "Continuer sans l'IA" : "Continue without AI"),
+          ),
+        ),
       ],
     );
   }
@@ -837,8 +1027,6 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
     final c = ai.category;
     final confidence = (ai.confidence * 100).round();
     final w = ai.estimatedWeightKg;
-    final userC = _userCategory;
-    final userW = _parseKg(_userWeightCtrl);
     return Container(
       decoration: BoxDecoration(
         color: AppColors.card,
@@ -907,29 +1095,6 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
                     backgroundColor: c.color.withValues(alpha: 0.12),
                   ),
                 ),
-                if (userC != null || userW != null) ...[
-                  const SizedBox(height: 14),
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(color: AppColors.inputFill, borderRadius: BorderRadius.circular(14)),
-                    child: Row(
-                      children: [
-                        Icon(Icons.person_outline_rounded, size: 16, color: AppColors.textGray),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            [
-                              fr ? "Vous aviez indiqué :" : "You entered:",
-                              if (userC != null) userC.label(fr),
-                              if (userW != null) _fmtKg(userW),
-                            ].join(' '),
-                            style: TextStyle(fontSize: 12, color: AppColors.textGray),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
               ],
             ),
           ),
@@ -938,90 +1103,7 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
     );
   }
 
-  /// Après Accepter ou Refuser : rappel du choix + valeurs retenues.
-  Widget _decisionPanel(bool fr) {
-    final accepted = _decision == _AiDecision.accepted;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Row(
-          children: [
-            Icon(accepted ? Icons.check_circle_rounded : Icons.edit_rounded,
-                size: 18, color: accepted ? AppColors.greenDeep : const Color(0xFFB07E00)),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                  accepted
-                      ? (fr ? "Résultat de l'IA accepté : ce sont les données du post." : "AI result accepted: these are the post's details.")
-                      : (fr ? "Corrigez les valeurs : ce sont elles qui seront enregistrées." : "Correct the values: these will be saved."),
-                  style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: AppColors.mainText)),
-            ),
-            TextButton(
-              onPressed: () => setState(() => _decision = _AiDecision.none),
-              child: Text(fr ? "Changer" : "Change"),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        if (accepted && !_askWeight)
-          _finalSummary(fr)
-        else if (accepted) ...[
-          Text(fr ? "L'IA n'a pas pu estimer le poids : indiquez-le." : "The AI couldn't estimate the weight: please enter it.",
-              style: TextStyle(fontSize: 12, color: AppColors.textGray)),
-          const SizedBox(height: 10),
-          _card(child: WeightInput(controller: _finalWeightCtrl, fr: fr, onChanged: () => setState(() {}))),
-        ] else
-          _editForm(fr),
-      ],
-    );
-  }
-
-  Widget _finalSummary(bool fr) {
-    final c = _finalCategory!;
-    final w = _parseKg(_finalWeightCtrl)!;
-    final points = RewardsConfig.pointsForCollection(c, w).round();
-    return _card(
-      child: Row(
-        children: [
-          WasteCategoryBadge(category: c, size: 44),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text("${c.label(fr)} · ${_fmtKg(w)}",
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.mainText)),
-                Text(fr ? "≈ $points points à la collecte" : "≈ $points points on pickup",
-                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.greenDeep)),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// Formulaire de correction (refus de l'IA ou analyse indisponible).
-  Widget _editForm(bool fr) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _sectionTitle(fr ? "Catégorie" : "Category", required: true, fr: fr),
-        const SizedBox(height: 10),
-        WasteCategoryPicker(
-          selected: _finalCategory,
-          fr: fr,
-          onChanged: (c) => setState(() => _finalCategory = c),
-        ),
-        const SizedBox(height: 18),
-        _sectionTitle(fr ? "Poids" : "Weight", required: true, fr: fr),
-        const SizedBox(height: 10),
-        _card(child: WeightInput(controller: _finalWeightCtrl, fr: fr, onChanged: () => setState(() {}))),
-      ],
-    );
-  }
-
-  // ---------------------------------------------------------------- étape 2
+  // ---------------------------------------------------------------- étape 3
   Widget _addressStep(bool fr) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1032,12 +1114,12 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
           children: [
             Expanded(
               child: _modeChip(Icons.my_location_rounded, fr ? "GPS de l'appareil" : "Device GPS", _useGps,
-                  () => setState(() => _useGps = true)),
+                  () => _setAddressMode(true)),
             ),
             const SizedBox(width: 10),
             Expanded(
-              child: _modeChip(Icons.edit_location_alt_rounded, fr ? "Adresse tapée" : "Typed address", !_useGps,
-                  () => setState(() => _useGps = false)),
+              child: _modeChip(Icons.location_city_rounded, fr ? "Ville et quartier" : "City & area", !_useGps,
+                  () => _setAddressMode(false)),
             ),
           ],
         ),
@@ -1049,23 +1131,30 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
                   child: Center(child: CircularProgressIndicator(color: AppColors.greenMid, strokeWidth: 2.4)),
                 )
               : _softButton(Icons.my_location_rounded, fr ? "Utiliser ma position" : "Use my location", _useDeviceGps)
-        else ...[
-          TextField(
-            controller: _addressCtrl,
-            decoration: InputDecoration(
-              hintText: fr ? "Ex. Rue 123, Bonamoussadi, Douala" : "E.g. Street 123, Bonamoussadi, Douala",
-              prefixIcon: const Icon(Icons.edit_location_alt_outlined, size: 19),
+        else if (_pickedPlace == null)
+          _softButton(Icons.location_city_rounded,
+              fr ? "Choisir la ville et le quartier" : "Choose city and neighborhood", _pickPlace)
+        else
+          _card(
+            child: Row(
+              children: [
+                const Icon(Icons.place_rounded, color: AppColors.greenDeep),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(_pickedPlace!.neighborhood,
+                          style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.mainText)),
+                      Text("${_pickedPlace!.city}, ${_pickedPlace!.country}",
+                          style: TextStyle(fontSize: 12, color: AppColors.textGray)),
+                    ],
+                  ),
+                ),
+                TextButton(onPressed: _pickPlace, child: Text(fr ? "Modifier" : "Change")),
+              ],
             ),
           ),
-          const SizedBox(height: 10),
-          _geocoding
-              ? const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 12),
-                  child: Center(child: CircularProgressIndicator(color: AppColors.greenMid, strokeWidth: 2.4)),
-                )
-              : _softButton(Icons.travel_explore_rounded, fr ? "Localiser cette adresse" : "Locate this address",
-                  _useTypedAddress),
-        ],
         if (_locationError != null) ...[
           const SizedBox(height: 12),
           InlineErrorBanner(message: _locationError!),
@@ -1117,6 +1206,7 @@ class _PostWasteScreenState extends State<PostWasteScreen> {
               switch (_decision) {
                 _AiDecision.accepted => fr ? "Acceptée" : "Accepted",
                 _AiDecision.refused => fr ? "Refusée, valeurs corrigées" : "Rejected, values corrected",
+                _AiDecision.skipped => fr ? "Non utilisée" : "Not used",
                 _AiDecision.unavailable => fr ? "Indisponible" : "Unavailable",
                 _AiDecision.none => '—',
               }),
@@ -1222,8 +1312,14 @@ class _StepHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final labels = fr ? ["Votre déchet", "Analyse IA", "Adresse"] : ["Your waste", "AI analysis", "Address"];
-    final icons = [RemixIcons.camera_3_fill, RemixIcons.sparkling_2_fill, RemixIcons.map_pin_2_fill];
+    final labels =
+        fr ? ["Votre déchet", "Analyse IA", "Détails", "Adresse"] : ["Your waste", "AI analysis", "Details", "Address"];
+    final icons = [
+      RemixIcons.camera_3_fill,
+      RemixIcons.sparkling_2_fill,
+      RemixIcons.scales_3_fill,
+      RemixIcons.map_pin_2_fill,
+    ];
     return Row(
       children: List.generate(labels.length * 2 - 1, (i) {
         if (i.isOdd) {

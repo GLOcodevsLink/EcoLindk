@@ -5,7 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 Matcher throwsCode(String code) =>
     throwsA(isA<GeminiServiceException>().having((e) => e.code, 'code', code));
 
-/// Un appel reçu par le faux Gemini.
+/// Un appel reçu par le service Gemini de test.
 class Call {
   final String model;
   final Content? system;
@@ -31,7 +31,7 @@ void main() {
 
   setUp(() => calls = []);
 
-  test('chat : consignes EcoLindk selon le rôle et la langue, historique complet', () async {
+  test('chat: EcoLindk instructions by role and language, full history', () async {
     final s = service((_) async => '  Bonjour !  ');
     final reply = await s.chat(
       history: const [
@@ -52,7 +52,7 @@ void main() {
     expect(textOf(call.contents.last), 'Comment trier le verre ?');
   });
 
-  test('modèle principal surchargé → réponse du modèle de secours', () async {
+  test('primary model overloaded → answer from the fallback model', () async {
     final s = service((call) async {
       if (call.model == 'nouveau') throw ServerException('The model is overloaded');
       return 'Salut';
@@ -61,33 +61,33 @@ void main() {
     expect(calls.map((c) => c.model), ['nouveau', 'secours']);
   });
 
-  test('modèle principal disponible → le secours n\'est jamais appelé', () async {
+  test('primary model available → the fallback is never called', () async {
     final s = service((_) async => 'Salut');
     await s.chat(history: const [], message: 'x', forCollector: false, french: true);
     expect(calls.map((c) => c.model), ['nouveau']);
   });
 
-  test('IA non activée dans Firebase → not-configured, sans essayer le secours', () async {
+  test('AI not enabled in Firebase → not-configured, fallback not tried', () async {
     final s = service((_) async => throw ServiceApiNotEnabled('AI Logic API disabled'));
     await expectLater(
         s.chat(history: const [], message: 'x', forCollector: false, french: true), throwsCode('not-configured'));
     expect(calls, hasLength(1));
   });
 
-  test('quota dépassé sur les deux modèles → rate-limited', () async {
+  test('quota exceeded on both models → rate-limited', () async {
     final s = service((_) async => throw QuotaExceeded('quota'));
     await expectLater(
         s.chat(history: const [], message: 'x', forCollector: false, french: true), throwsCode('rate-limited'));
     expect(calls, hasLength(2));
   });
 
-  test('réponse vide → invalid-response', () async {
+  test('empty answer → invalid-response', () async {
     final s = service((_) async => '  ', models: const ['nouveau']);
     await expectLater(
         s.chat(history: const [], message: 'x', forCollector: false, french: true), throwsCode('invalid-response'));
   });
 
-  test('classifyWasteImage envoie consigne + image et décode le JSON', () async {
+  test('classifyWasteImage sends instructions + image and decodes the JSON', () async {
     final s = service((_) async => '{"category":"glass","confidence":0.8,"estimatedWeightKg":2}');
     final json = await s.classifyWasteImage(imageBytes: [1, 2, 3], mimeType: 'image/png');
 
@@ -100,7 +100,7 @@ void main() {
     expect(calls.single.config.responseMimeType, 'application/json');
   });
 
-  test('classifyWasteImage : texte non JSON → invalid-response', () async {
+  test('classifyWasteImage: non-JSON text → invalid-response', () async {
     final s = service((_) async => 'pas du json');
     await expectLater(s.classifyWasteImage(imageBytes: [1], mimeType: 'image/jpeg'), throwsCode('invalid-response'));
   });

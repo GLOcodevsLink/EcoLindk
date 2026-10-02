@@ -8,9 +8,9 @@ import '../widgets/decorative_leaves.dart';
 import '../widgets/gradient_pill_button.dart';
 
 /// Vérification du numéro de téléphone à l'inscription, par code OTP à 6
-/// chiffres — **simulée** : aucun SMS n'est réellement envoyé (voir
-/// SimulatedOtpService). Le code "reçu" s'affiche en haut de l'écran, dans
-/// une carte qui imite une notification SMS et le dit clairement.
+/// chiffres — **simulée** : aucun SMS n'est réellement envoyé, le code
+/// attendu est fixe (voir SimulatedOtpService.verificationCode) et n'est
+/// pas affiché.
 ///
 /// Se ferme avec `true` quand le bon code a été saisi, `false`/`null` si
 /// l'utilisateur revient en arrière.
@@ -27,7 +27,6 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen> {
   final _codeCtrl = TextEditingController();
   final _codeFocus = FocusNode();
 
-  String? _simulatedSms; // code affiché dans la fausse notification SMS
   String? _error;
   bool _blocked = false;
   Timer? _ticker;
@@ -50,10 +49,14 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen> {
     super.dispose();
   }
 
-  void _sendCode() {
-    final code = _otp.send();
+  void _sendCode({bool resent = false}) {
+    _otp.send();
+    if (resent) {
+      final fr = appLanguage.value == AppLanguage.fr;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(fr ? "Nouveau code envoyé au ${widget.phoneNumber}." : "New code sent to ${widget.phoneNumber}.")));
+    }
     setState(() {
-      _simulatedSms = code;
       _error = null;
       _blocked = false;
       _codeCtrl.clear();
@@ -119,7 +122,7 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen> {
                         icon: Icon(Icons.arrow_back, color: AppColors.heading),
                       ),
                     ),
-                    if (_simulatedSms != null) _smsCard(_simulatedSms!, fr),
+                    _sentCard(fr),
                     const SizedBox(height: 22),
                     Text(fr ? "Vérifiez votre numéro" : "Verify your number",
                         style: TextStyle(
@@ -164,13 +167,13 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen> {
                     const SizedBox(height: 22),
                     GradientPillButton(
                       label: fr ? "Vérifier" : "Verify",
-                      onPressed: _blocked ? _sendCode : () => _verify(fr),
+                      onPressed: _blocked ? () => _sendCode(resent: true) : () => _verify(fr),
                       gradient: AppColors.authButtonGradient,
                     ),
                     const SizedBox(height: 10),
                     Center(
                       child: TextButton(
-                        onPressed: wait == Duration.zero ? _sendCode : null,
+                        onPressed: wait == Duration.zero ? () => _sendCode(resent: true) : null,
                         child: Text(
                           wait == Duration.zero
                               ? (fr ? "Renvoyer le code" : "Resend code")
@@ -196,92 +199,32 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen> {
     );
   }
 
-  /// Fausse notification SMS : le seul endroit où le code apparaît, avec la
-  /// mention explicite qu'il s'agit d'une simulation.
-  Widget _smsCard(String code, bool fr) {
-    return TweenAnimationBuilder<double>(
-      key: ValueKey(code),
-      tween: Tween(begin: 0, end: 1),
-      duration: const Duration(milliseconds: 350),
-      curve: Curves.easeOutCubic,
-      builder: (context, t, child) => Opacity(
-        opacity: t,
-        child: Transform.translate(offset: Offset(0, -16 * (1 - t)), child: child),
+  /// Confirmation d'envoi du code (le code lui-même n'est jamais affiché).
+  Widget _sentCard(bool fr) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.line, width: 1.2),
       ),
-      child: Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: AppColors.card,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppColors.line, width: 1.2),
-          boxShadow: [
-            BoxShadow(
-                color: Colors.black.withValues(alpha: 0.06),
-                blurRadius: 14,
-                offset: const Offset(0, 4)),
-          ],
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              width: 36,
-              height: 36,
-              decoration: const BoxDecoration(
-                  gradient: AppColors.logoGradient, shape: BoxShape.circle),
-              child: const Icon(Icons.sms_outlined, color: Colors.white, size: 18),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Text("EcoLindk",
-                          style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w800,
-                              color: AppColors.mainText)),
-                      const SizedBox(width: 8),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: AppColors.amber.withValues(alpha: 0.18),
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                        child: Text(fr ? "SMS simulé" : "Simulated SMS",
-                            style: TextStyle(
-                                fontSize: 10.5,
-                                fontWeight: FontWeight.w800,
-                                color: AppColors.heading)),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 4),
-                  Text.rich(
-                    TextSpan(
-                      style: TextStyle(fontSize: 13, color: AppColors.mainText, height: 1.35),
-                      children: [
-                        TextSpan(text: fr ? "Votre code de vérification est " : "Your verification code is "),
-                        TextSpan(
-                            text: code,
-                            style: const TextStyle(fontWeight: FontWeight.w900, letterSpacing: 1.5)),
-                        TextSpan(text: fr ? ". Il expire dans 5 minutes." : ". It expires in 5 minutes."),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                      fr
-                          ? "Démonstration : aucun SMS réel n'est envoyé pour l'instant."
-                          : "Demo: no real SMS is sent yet.",
-                      style: TextStyle(fontSize: 11, color: AppColors.textGray)),
-                ],
-              ),
-            ),
-          ],
-        ),
+      child: Row(
+        children: [
+          Container(
+            width: 36,
+            height: 36,
+            decoration: const BoxDecoration(gradient: AppColors.logoGradient, shape: BoxShape.circle),
+            child: const Icon(Icons.sms_outlined, color: Colors.white, size: 18),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+                fr
+                    ? "Un code de vérification a été envoyé par SMS au ${widget.phoneNumber}."
+                    : "A verification code was sent by SMS to ${widget.phoneNumber}.",
+                style: TextStyle(fontSize: 13, color: AppColors.mainText, height: 1.35)),
+          ),
+        ],
       ),
     );
   }

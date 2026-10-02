@@ -2,6 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show AutofillHints, TextInput;
 import '../core/theme.dart';
+import '../core/validators.dart';
 import '../services/auth_service.dart';
 import '../services/settings_service.dart';
 import '../widgets/gradient_pill_button.dart';
@@ -158,8 +159,7 @@ class _LoginScreenState extends State<LoginScreen> {
               hintText: s.resetPasswordEmailHint,
               prefixIcon: const Icon(Icons.email_outlined, size: 19),
             ),
-            validator: (v) =>
-                (v == null || v.trim().isEmpty) ? s.requiredField : null,
+            validator: (v) => Validators.email(v, fr: s.lang == AppLanguage.fr),
           ),
         ),
         actions: [
@@ -447,8 +447,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     : "Enter your email",
                 prefixIcon: const Icon(Icons.email_outlined, size: 19),
               ),
-              validator: (v) =>
-                  (v == null || v.isEmpty) ? s.requiredField : null,
+              validator: (v) => Validators.email(v, fr: lang == AppLanguage.fr),
             );
           },
           optionsViewBuilder: (context, onSelected, options) {

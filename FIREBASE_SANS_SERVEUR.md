@@ -73,6 +73,19 @@ l'IA échoue.
 5. À partir de là, lancez et construisez toujours l'app avec
    `--dart-define=ENABLE_APP_CHECK=true`.
 
+## Si Google bloque Gemini pour votre compte
+
+Message « Your project has been denied access » : Google refuse Gemini au
+compte qui possède `ecolindk`. L'IA peut alors passer par un projet Firebase
+d'un **autre compte Google**, sans rien changer d'autre (comptes, données et
+règles restent dans `ecolindk`) :
+
+1. Avec l'autre compte : créez un projet Firebase, ajoutez-y une app Android
+   `com.example.ecolindk`, puis activez **AI Logic** (Gemini Developer API).
+2. Paramètres du projet > Vos applications > l'app Android : relevez
+   `apiKey`, `appId`, `messagingSenderId`, `projectId`.
+3. Renseignez-les dans `lib/ai_firebase_options.dart`, puis relancez l'app.
+
 ## 5. Révoquer les anciennes clés
 
 Ces clés ne servent plus et figuraient dans d'anciens APK :
@@ -80,6 +93,26 @@ Ces clés ne servent plus et figuraient dans d'anciens APK :
 - **Clé Gemini** : https://aistudio.google.com/apikey > supprimez l'ancienne clé.
 - **Clé StockImg** : tableau de bord StockImg > supprimez la clé.
   (Les photos des anciens posts restent affichées tant que StockImg les héberge.)
+
+## 6. Tableau de bord administrateur (web)
+
+Application séparée dans `lib/admin/`, même projet Firebase ; l'app mobile
+n'en importe rien.
+
+1. Déployez les règles (elles ajoutent l'accès admin) :
+   `firebase deploy --only firestore:rules`
+2. Créez le compte admin comme un compte normal (inscription dans l'app ou
+   console > Authentication > Ajouter un utilisateur), copiez son **UID**.
+3. Console > Firestore > collection `admins` > document dont l'id est cet
+   UID (un champ quelconque, ex. `email`). Aucun client ne peut écrire
+   dans `admins` : c'est la seule façon d'ajouter ou retirer un admin.
+4. Lancez : `flutter run -d chrome -t lib/admin/main_admin.dart`
+   Compilez : `flutter build web -t lib/admin/main_admin.dart -o build/admin_web`
+
+Pages : vue d'ensemble, fournisseurs, collecteurs, posts (retrait d'un post
+encore libre), collectes, paiements. Le tableau de bord lit les
+collections entières en temps réel : à chaque ouverture, environ une
+lecture par document (à surveiller face aux 50 000 lectures/jour).
 
 ## Limites du plan gratuit à connaître
 

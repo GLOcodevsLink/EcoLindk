@@ -4,7 +4,9 @@ import 'package:remixicon/remixicon.dart';
 
 /// Catégories de déchets recyclables reconnues par l'app (déclaration
 /// manuelle ou suggestion IA — voir [PostWasteScreen]).
-enum WasteCategory { plastic, paperCardboard, glass, metal }
+/// Canettes de boisson et métal sont deux catégories distinctes (demande
+/// explicite) : barèmes différents.
+enum WasteCategory { plastic, paperCardboard, glass, metal, beverageCans }
 
 extension WasteCategoryX on WasteCategory {
   String label(bool fr) => switch (this) {
@@ -12,14 +14,16 @@ extension WasteCategoryX on WasteCategory {
         WasteCategory.paperCardboard =>
           fr ? "Papier / Carton" : "Paper / Cardboard",
         WasteCategory.glass => fr ? "Verre" : "Glass",
-        WasteCategory.metal => fr ? "Métal (canettes, etc.)" : "Metal (cans, etc.)",
+        WasteCategory.metal => fr ? "Métal" : "Metal",
+        WasteCategory.beverageCans => fr ? "Canettes de boisson" : "Beverage cans",
       };
 
   IconData get icon => switch (this) {
         WasteCategory.plastic => Icons.liquor_rounded, // bouteille
         WasteCategory.paperCardboard => RemixIcons.box_3_fill, // carton
         WasteCategory.glass => RemixIcons.goblet_fill,
-        WasteCategory.metal => RemixIcons.oil_fill, // bidon / canette
+        WasteCategory.metal => RemixIcons.oil_fill, // bidon, ferraille
+        WasteCategory.beverageCans => Icons.sports_bar_rounded, // canette
       };
 
   /// Exemples courts affichés sous le nom de la catégorie (formulaire de
@@ -28,17 +32,24 @@ extension WasteCategoryX on WasteCategory {
         WasteCategory.plastic => fr ? "Bouteilles, bidons, emballages" : "Bottles, jugs, packaging",
         WasteCategory.paperCardboard => fr ? "Cartons, journaux, papier" : "Boxes, newspapers, paper",
         WasteCategory.glass => fr ? "Bouteilles, bocaux" : "Bottles, jars",
-        WasteCategory.metal => fr ? "Canettes, boîtes, alu" : "Cans, tins, aluminium",
+        WasteCategory.metal => fr ? "Ferraille, boîtes de conserve, fer" : "Scrap metal, food tins, iron",
+        WasteCategory.beverageCans => fr ? "Canettes de soda, de bière, de jus" : "Soda, beer and juice cans",
       };
 
   /// Couleur d'accent propre à chaque catégorie — utilisée partout où une
   /// catégorie est affichée (post d'un déchet, historique, suivi, listes de
   /// prix…) pour que ces écrans ne soient jamais uniformément verts/gris.
   Color get color => switch (this) {
-        WasteCategory.plastic => const Color(0xFF2094C4), // bleu
-        WasteCategory.paperCardboard => const Color(0xFFB5792B), // brun chaud
-        WasteCategory.glass => const Color(0xFF17A398), // sarcelle
-        WasteCategory.metal => const Color(0xFF7C5CBF), // violet acier
+        // Palette vert/or du thème (demande explicite : catégories en
+        // couleurs "qui entrent dans le thème de l'app, vert et or") —
+        // teintes alternées pour rester distinguables entre elles.
+        WasteCategory.plastic => const Color(0xFF3E9E6C), // vert émeraude
+        // Papier/carton et métal : même vert feuille que les canettes
+        // (demande explicite : plus de pastilles jaunes).
+        WasteCategory.paperCardboard => const Color(0xFF86A843), // vert feuille
+        WasteCategory.glass => const Color(0xFF2E6E4E), // vert forêt
+        WasteCategory.metal => const Color(0xFF86A843), // vert feuille
+        WasteCategory.beverageCans => const Color(0xFF86A843), // vert feuille
       };
 
   /// Dégradé de l'icône de catégorie : de la couleur d'accent vers une

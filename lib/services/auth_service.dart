@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 
 import '../models/user_role.dart';
+import 'contact_service.dart';
 
 /// Statut de vérification d'un compte, stocké dans Firestore.
 /// - Ménage : vérifié automatiquement dès le choix du rôle.
@@ -23,9 +24,10 @@ extension VerificationStatusValue on VerificationStatus {
 /// 1. Le téléphone est confirmé par un code OTP **simulé** (voir
 ///    SimulatedOtpService / OtpVerificationScreen).
 /// 2. [registerAccount] crée le compte email/mot de passe et le document
-///    Firestore (sans rôle), puis envoie l'email de vérification.
-/// 3. L'utilisateur clique sur le lien reçu (voir EmailVerificationScreen,
-///    [reloadEmailVerified]) avant de finaliser son rôle. Vérifications faites
+///    Firestore, puis envoie l'email de vérification — Fournisseur
+///    uniquement, jamais au Collecteur (demande explicite).
+/// 3. Le Fournisseur clique sur le lien reçu (voir EmailVerificationScreen,
+///    [reloadEmailVerified]) avant d'accéder à la plateforme. Vérifications faites
 ///    UNIQUEMENT à l'inscription : jamais à la connexion, et les comptes
 ///    créés avant elles continuent de fonctionner tels quels.
 /// 4. [completeHouseholdRegistration] ou [completeCollectorRegistration]
@@ -201,16 +203,31 @@ class AuthService {
     required String lastName,
     required String address,
     required String phoneNumber,
+    required UserRole role,
+    String? companyName,
     bool phoneVerified = false,
     bool french = true,
     String? referredBy,
   }) async {
-    final credential = await _auth.createUserWithEmailAndPassword(
-      email: email.trim(),
-      password: password,
-    );
+    UserCredential credential;
+    var createdNow = true;
+    try {
+      credential = await _auth.createUserWithEmailAndPassword(
+        email: email.trim(),
+        password: password,
+      );
+    } on FirebaseAuthException catch (e) {
+      if (e.code != 'email-already-in-use') rethrow;
+      // Inscription précédente interrompue (app fermée sur l'écran de
+      // vérification, erreur réseau…) : le compte existe déjà mais n'a
+      // jamais été terminé. Avec le bon mot de passe, on la reprend au lieu
+      // de bloquer l'utilisateur sur "email déjà utilisé".
+      credential = await _resumeUnfinishedRegistration(email, password);
+      createdNow = false;
+    }
 
-    await _createUserDocument(credential.user!.uid, {
+    try {
+      await _createUserDocument(credential.user!.uid, {
       'email': email.trim(),
       'firstName': firstName.trim(),
       'lastName': lastName.trim(),
@@ -219,29 +236,111 @@ class AuthService {
       'phone': phoneNumber,
       'phoneVerified': phoneVerified,
       'phoneVerificationMethod': phoneVerified ? 'simulated-otp' : null,
-      'role': null,
-      'verificationStatus': null,
+      // Rôle choisi en haut du formulaire, enregistré DÈS la création :
+      // même si l'inscription est interrompue (app fermée sur l'écran de
+      // vérification de l'email), le compte ne se retrouve jamais sans rôle.
+      // Le Collecteur reste à finaliser (zones, statut) : `intendedRole`
+      // renvoie vers son écran de configuration à la prochaine ouverture.
+      'role': role == UserRole.household ? UserRole.household.name : null,
+      'verificationStatus': role == UserRole.household ? VerificationStatus.verified.value : null,
+      'intendedRole': role.name,
+      // Réservé au Collecteur.
+      'companyName': (role != UserRole.collector || companyName == null || companyName.trim().isEmpty)
+          ? null
+          : companyName.trim(),
+      // Compte Fournisseur créé avec la vérification d'email : pas d'accès
+      // à la plateforme tant que le lien reçu n'a pas été cliqué (voir
+      // HomeScreen). Jamais pour le Collecteur (demande explicite : annuler
+      // la vérification d'email à son niveau) ; les comptes créés avant
+      // n'ont pas ce champ et ne sont jamais bloqués non plus.
+      'emailVerificationRequired': role == UserRole.household,
       // Uid du parrain (voir ReferralService) — `null` si aucun code de
       // parrainage n'a été saisi. Lu par ReferralService.creditIfQualifying
       // quand ce nouveau compte termine sa première collecte qualifiante.
       'referredBy': referredBy,
-    });
+      });
+    } catch (_) {
+      // Jamais de compte à moitié créé : sans sa fiche, on supprime le
+      // compte tout juste créé pour que l'utilisateur puisse réessayer avec
+      // le même email.
+      if (createdNow) {
+        try {
+          await credential.user!.delete();
+        } catch (_) {}
+      }
+      rethrow;
+    }
 
     if (phoneNumber.trim().isNotEmpty) {
+      // Best-effort : l'index téléphone → email ne sert qu'à la connexion
+      // par téléphone ; son échec ne doit pas faire échouer l'inscription.
       // L'email tel que Firebase l'a enregistré (normalisé), celui que
       // firestore.rules compare au jeton.
-      await _phoneLookup
-          .doc(phoneNumber.trim())
-          .set({'email': credential.user!.email ?? email.trim()});
+      try {
+        await _phoneLookup
+            .doc(phoneNumber.trim())
+            .set({'email': credential.user!.email ?? email.trim()});
+      } catch (_) {}
     }
 
     // Best-effort : si l'envoi échoue (réseau, quota), l'écran de
     // vérification propose de le renvoyer — le compte, lui, est créé.
-    try {
-      await sendEmailVerification(french: french);
-    } catch (_) {}
+    if (role == UserRole.household && credential.user?.emailVerified != true) {
+      try {
+        await sendEmailVerification(french: french);
+      } catch (_) {}
+    }
 
     return credential;
+  }
+
+  /// Reprend une inscription commencée mais jamais terminée (rôle jamais
+  /// choisi) avec cet email. Lève `email-already-in-use` si le mot de passe
+  /// ne correspond pas ou si le compte est déjà complet : dans ce cas, c'est
+  /// bien un compte existant, auquel il faut se connecter.
+  Future<UserCredential> _resumeUnfinishedRegistration(String email, String password) async {
+    final UserCredential credential;
+    try {
+      credential = await signIn(email: email, password: password);
+    } on FirebaseAuthException {
+      throw FirebaseAuthException(code: 'email-already-in-use');
+    }
+    final doc = await _users.doc(credential.user!.uid).get();
+    if (doc.exists && doc.data()?['role'] != null) {
+      await signOut();
+      throw FirebaseAuthException(code: 'email-already-in-use');
+    }
+    return credential;
+  }
+
+  /// Annule l'inscription en cours (bouton "Mauvaise adresse ?" de l'écran
+  /// de vérification) : supprime l'entrée téléphone, la fiche et le compte
+  /// tout juste créés, pour pouvoir recommencer avec une autre adresse — ou
+  /// la même. Ne concerne qu'un compte dont le rôle n'est pas encore choisi.
+  Future<void> abandonRegistration({String? phone}) async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+    final doc = await _users.doc(user.uid).get();
+    if (doc.data()?['role'] != null) {
+      await signOut();
+      return;
+    }
+    final phoneNumber = phone ?? (doc.data()?['phone'] as String?);
+    try {
+      if (phoneNumber != null && phoneNumber.trim().isNotEmpty) {
+        await _phoneLookup.doc(phoneNumber.trim()).delete();
+      }
+    } catch (_) {}
+    try {
+      await _users.doc(user.uid).delete();
+    } catch (_) {}
+    try {
+      await user.delete();
+    } catch (_) {
+      // Connexion trop ancienne pour supprimer : on se contente de se
+      // déconnecter, l'inscription pourra être reprise avec le même email.
+    }
+    await signOut();
   }
 
   /// Finalise un compte Ménage : vérifié immédiatement.
@@ -259,18 +358,20 @@ class AuthService {
   ///
   /// Les zones de collecte s'enregistrent juste après, via
   /// CollectorZoneService (voir CollectorSetupScreen).
+  /// [workStatus] et [companyName] sont facultatifs : l'écran de
+  /// configuration ne les demande plus (demande explicite). Non fournis, ils
+  /// ne sont pas écrits — le nom d'entreprise saisi à l'inscription reste.
   Future<void> completeCollectorRegistration(
     String uid, {
-    required WorkStatus workStatus,
+    WorkStatus? workStatus,
     String? companyName,
   }) {
     return _users.doc(uid).update({
       'role': UserRole.collector.name,
       'verificationStatus': VerificationStatus.verified.value,
-      'workStatus': workStatus.name,
-      'companyName': (companyName == null || companyName.trim().isEmpty)
-          ? null
-          : companyName.trim(),
+      if (workStatus != null) 'workStatus': workStatus.name,
+      if (companyName != null)
+        'companyName': companyName.trim().isEmpty ? null : companyName.trim(),
     });
   }
 
@@ -287,6 +388,11 @@ class AuthService {
   ) {
     return _users.doc(uid).get();
   }
+
+  /// Photo de profil (référence renvoyée par WastePhotoService.uploadAvatar),
+  /// ou `null` pour la retirer.
+  Future<void> updateProfilePhoto(String uid, String? photoRef) =>
+      _users.doc(uid).update({'photoUrl': photoRef});
 
   /// Met à jour des champs libres de la fiche profil (nom, adresse, zone de
   /// collecte…). `role` et `verificationStatus` sont exclus côté
@@ -359,6 +465,9 @@ class AuthService {
     if (phone != null && phone.trim().isNotEmpty) {
       await _phoneLookup.doc(phone.trim()).delete();
     }
+    try {
+      await ContactService(firestore: _firestore).deleteOwnPhone(user.uid);
+    } catch (_) {}
     await _users.doc(user.uid).delete();
     await user.delete();
   }
